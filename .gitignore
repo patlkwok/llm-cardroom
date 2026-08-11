@@ -1,0 +1,25 @@
+# Dependencies and build output
+node_modules/
+out/
+release/
+dist/
+
+# TypeScript incremental build state
+*.tsbuildinfo
+
+# Local tooling / assistant state — never publish
+.claude/
+CLAUDE.md
+.vscode/
+.idea/
+
+# Secrets and local environment
+.env
+.env.*
+*.pem
+*.key
+
+# Misc
+*.log
+.DS_Store
+Thumbs.db

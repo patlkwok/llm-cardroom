@@ -1,0 +1,140 @@
+import { chatCompletion, OpenRouterError, type ChatMessage } from '../openrouter.ts'
+import type { PlayerConfig } from '../../shared/types.ts'
+import type { ParseOutcome, Prompt } from './prompts.ts'
+
+export interface AgentResult<T> {
+  action: T
+  reasoning: string
+  attempts: number
+  /** Present when the model never produced a usable action. */
+  fallbackReason?: string
+  /**
+   * Set when the failure will repeat on every call (bad key, no credits). The
+   * caller should stop rather than fall back for the rest of the match.
+   */
+  fatalReason?: string
+  latencyMs: number
+  promptTokens: number
+  completionTokens: number
+  costUsd: number
+}
+
+export interface DecisionRequest<T> {
+  apiKey: string
+  player: PlayerConfig
+  prompt: Prompt
+  parse: (text: string) => ParseOutcome<T>
+  /** Used when every attempt fails, so the table can always keep moving. */
+  fallback: T
+  signal?: AbortSignal
+  maxAttempts?: number
+  onAttemptFailed?: (attempt: number, problem: string) => void
+}
+
+/**
+ * Asks a model for one decision, correcting it in-conversation when the reply
+ * is unusable. Always returns something so a game never stalls on a bad model.
+ */
+export async function requestDecision<T>(request: DecisionRequest<T>): Promise<AgentResult<T>> {
+  const { apiKey, player, prompt, parse, fallback, signal, maxAttempts = 3 } = request
+  const started = Date.now()
+
+  const messages: ChatMessage[] = [
+    { role: 'system', content: prompt.system },
+    { role: 'user', content: prompt.user }
+  ]
+
+  let promptTokens = 0
+  let completionTokens = 0
+  let costUsd = 0
+  let lastProblem = 'The model never returned a usable action.'
+  let lastReasoning = ''
+  let fatalReason: string | undefined
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) break
+
+    let text: string
+    let reasoningChannel = ''
+    try {
+      const result = await chatCompletion({
+        apiKey,
+        model: player.modelId,
+        messages,
+        reasoningEffort: player.reasoningEffort,
+        signal
+      })
+      text = result.text
+      reasoningChannel = result.reasoning
+      promptTokens += result.promptTokens
+      completionTokens += result.completionTokens
+      costUsd += result.costUsd
+    } catch (error) {
+      const err = error as OpenRouterError
+      lastProblem = err.message
+      if (signal?.aborted) break
+      if (err instanceof OpenRouterError && err.fatal) {
+        // No point asking again, or asking anyone else.
+        fatalReason = err.message
+        break
+      }
+      request.onAttemptFailed?.(attempt, err.message)
+      // Only network-ish failures are worth another try; a bad model id is not.
+      if (!(err instanceof OpenRouterError) || !err.retryable || attempt === maxAttempts) break
+      await sleep(600 * attempt)
+      continue
+    }
+
+    const outcome = parse(text)
+    if (outcome.reasoning) lastReasoning = outcome.reasoning
+    else if (reasoningChannel) lastReasoning = firstSentences(reasoningChannel)
+
+    if (outcome.ok && outcome.value !== undefined) {
+      return {
+        action: outcome.value,
+        reasoning: lastReasoning || '(no reasoning given)',
+        attempts: attempt,
+        latencyMs: Date.now() - started,
+        promptTokens,
+        completionTokens,
+        costUsd
+      }
+    }
+
+    lastProblem = outcome.problem ?? 'Unusable reply.'
+    request.onAttemptFailed?.(attempt, lastProblem)
+
+    if (attempt < maxAttempts) {
+      messages.push({ role: 'assistant', content: text.slice(0, 2000) })
+      messages.push({
+        role: 'user',
+        content: `${lastProblem}\n\nReply again with only the JSON object, nothing else.`
+      })
+    }
+  }
+
+  return {
+    action: fallback,
+    reasoning: lastReasoning,
+    attempts: maxAttempts,
+    fallbackReason: lastProblem,
+    fatalReason,
+    latencyMs: Date.now() - started,
+    promptTokens,
+    completionTokens,
+    costUsd
+  }
+}
+
+/** Trims a long reasoning trace down to something a table can display. */
+function firstSentences(text: string, limit = 320): string {
+  const clean = text.replace(/\s+/g, ' ').trim()
+  if (clean.length <= limit) return clean
+  const cut = clean.slice(0, limit)
+  const stop = cut.lastIndexOf('. ')
+  return `${stop > 80 ? cut.slice(0, stop + 1) : cut}…`
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}

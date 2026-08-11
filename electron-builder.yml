@@ -1,0 +1,25 @@
+appId: com.llmcardroom.app
+productName: LLM Cardroom
+directories:
+  buildResources: resources
+  output: release
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  # Hyphenated literal: ${productName} contains a space.
+  artifactName: LLM-Cardroom-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: LLM Cardroom
+portable:
+  artifactName: LLM-Cardroom-${version}-portable.${ext}

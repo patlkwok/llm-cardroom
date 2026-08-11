@@ -1,0 +1,7 @@
+# Normalise line endings: LF in the repository, native in the working copy.
+* text=auto eol=lf
+
+# Binary assets git should not try to diff or convert.
+*.png binary
+*.ico binary
+*.exe binary
