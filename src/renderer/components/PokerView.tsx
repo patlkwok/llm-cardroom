@@ -104,7 +104,10 @@ function SeatBox({
       <div className="seat-plate">
         <div className="seat-plate-top">
           <span className="seat-name">
-            {seat.name}
+            {/* The name needs its own element: text-overflow does not apply to
+                a flex container, so putting it directly here clipped long names
+                mid-character instead of ellipsising them. */}
+            <span className="seat-name-text">{seat.name}</span>
             {thinking && <span className="dots"><i /><i /><i /></span>}
           </span>
           {isButton && <span className="dealer-button">D</span>}

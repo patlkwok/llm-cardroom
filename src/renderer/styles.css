@@ -1025,11 +1025,22 @@ button:disabled {
   text-align: center;
 }
 
+/*
+ * The plate's own max-width bounds the name; min-width: 0 is what lets these
+ * flex items shrink below their content size so the ellipsis can engage. The
+ * old rule put text-overflow on .seat-name itself, which is an inline-flex
+ * container and therefore ignores it — long names clipped mid-character on
+ * macOS, where the interface font renders them a shade wider.
+ */
 .seat-plate .seat-name {
+  min-width: 0;
+}
+
+.seat-plate .seat-name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 108px;
 }
 
 .seat-acting .seat-plate {

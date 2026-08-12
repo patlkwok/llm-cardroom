@@ -30,6 +30,10 @@ function installOpenRouterMock() {
   globalThis.__mockAction = 'stand'
 
   const MODELS = [
+    // The first entry is deliberately long. Seat names are capped at 22
+    // characters, and the catalogue is sorted by name, so this one gets seated
+    // first and every run photographs the worst case for name overflow.
+    'anthropic/claude-opus-4-5-long-context',
     'anthropic/claude-sonnet-4.5',
     'openai/gpt-5',
     'google/gemini-3-pro',
@@ -54,7 +58,7 @@ function installOpenRouterMock() {
       headers: { 'Content-Type': 'application/json' }
     })
 
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const url = String(input && input.url ? input.url : input)
 
     if (url.endsWith('/key')) {
@@ -64,11 +68,19 @@ function installOpenRouterMock() {
       return json({ data: MODELS })
     }
     if (url.endsWith('/chat/completions')) {
+      const body = String((init && init.body) || '')
+      // Insurance is a separate decision with its own reply shape. Answering it
+      // with an `action` fails parsing three times and lands on a fallback,
+      // which then shows up in the screenshots as if the app had misbehaved.
+      const answer = body.includes('Do you take insurance?')
+        ? { insurance: false }
+        : { action: globalThis.__mockAction }
+
       const reply = JSON.stringify({
         reasoning:
           'Canned reply from the screenshot harness — enough to keep the table ' +
           'moving so the layout can be photographed.',
-        action: globalThis.__mockAction
+        ...answer
       })
       return json({
         choices: [{ message: { content: reply } }],
@@ -169,6 +181,12 @@ async function stopMatch(win) {
 }
 
 async function shoot(win, name) {
+  // Setting the pace slider focuses a control near the bottom of the sidebar,
+  // which scrolls the panel and leaves its heading out of frame — worse on
+  // Linux, where wider font metrics make the sidebar taller.
+  await win.evaluate(() => {
+    document.querySelector('.sidebar')?.scrollTo(0, 0)
+  })
   const path = join(OUT_DIR, name)
   await win.screenshot({ path })
   console.log(`  captured ${name}`)
