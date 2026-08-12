@@ -1,7 +1,7 @@
 {
   "name": "llm-cardroom",
   "productName": "LLM Cardroom",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Watch LLMs play Blackjack and No-Limit Texas Hold'em",
   "main": "./out/main/index.js",
   "author": "llm-cardroom",
@@ -12,8 +12,13 @@
     "build": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && electron-vite build",
     "start": "electron-vite preview",
     "test": "node --import tsx --test test/*.test.ts",
-    "dist": "npm run build && electron-builder --win",
-    "dist:dir": "npm run build && electron-builder --win --dir"
+    "icon": "electron scripts/make-icon.cjs",
+    "screenshot": "node scripts/screenshot.mjs",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "dist:dir": "npm run build && electron-builder --dir"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

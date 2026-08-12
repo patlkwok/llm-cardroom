@@ -16,21 +16,51 @@ npm install
 npm run dev      # development, with hot reload
 ```
 
-To produce the distributable Windows executable:
+Windows, macOS and Linux are all supported. `npm run dist` packages for
+whichever platform you are on:
 
-```bash
-npm run dist     # -> release/LLM-Cardroom-1.0.0-x64.exe (installer)
-                 #    release/LLM-Cardroom-1.0.0-portable.exe
-```
+| Platform | Artifacts |
+| --- | --- |
+| Windows | `LLM-Cardroom-<version>-x64.exe` (NSIS installer), `-portable.exe` |
+| macOS | `LLM-Cardroom-<version>-mac-<arm64\|x64>.dmg` and `.zip` |
+| Linux | `LLM-Cardroom-<version>-linux-x64.AppImage` and `.deb` |
 
 `npm run dist:dir` builds an unpacked folder instead, which is quicker when you
 only want to smoke-test the packaged app.
 
+**Each platform must be packaged on itself.** A macOS `.dmg` needs macOS to
+build and sign, and Linux packaging needs Linux tooling, so there is no
+cross-compiling to be had. The GitHub Actions workflow in
+[`.github/workflows/build.yml`](.github/workflows/build.yml) builds all three on
+a push, and attaches them to the release when a `v*` tag is pushed.
+
+### Platform notes
+
+**macOS builds are ad-hoc signed, not notarised**, because this project has no
+paid Apple Developer ID. The app runs, but Gatekeeper will not vouch for it, so
+the first launch needs right-click → **Open**, or:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/LLM Cardroom.app"
+```
+
+(An entirely unsigned build would not launch on Apple Silicon at all, which is
+why `scripts/afterpack-adhoc-sign.cjs` exists.)
+
+**Windows builds are unsigned**, so SmartScreen shows a warning on first run.
+
+**On Linux, install a desktop keyring** — `gnome-keyring` or KWallet — before
+saving an API key. Without one, Electron's `safeStorage` silently falls back to
+a backend that "encrypts" with a hardcoded key, which is obfuscation rather than
+protection. The app detects this and says so next to the key field instead of
+claiming the key is encrypted.
+
 ## Setup inside the app
 
 1. Paste an [OpenRouter API key](https://openrouter.ai/keys). It is verified
-   against the account endpoint and then stored encrypted with the Windows
-   credential store (DPAPI) via Electron's `safeStorage`. On every later launch
+   against the account endpoint and then stored in the operating system's
+   credential store via Electron's `safeStorage` — DPAPI on Windows, the
+   Keychain on macOS, a keyring on Linux. On every later launch
    the stored key is re-checked in the background, so the badge reads **key
    works** or **key rejected** rather than merely "saved" — a revoked key is
    caught before you deal in, not after a table full of failed calls.
@@ -176,8 +206,9 @@ seven-card hand evaluation with proper kicker comparison.
 npm test
 ```
 
-93 tests covering hand evaluation, betting order, side pots, chip conservation
-across randomised hands and repeated roster churn, blackjack settlement,
+98 tests covering hand evaluation, betting order, side pots, chip conservation
+across randomised hands (including players who fold when checking was free) and
+repeated roster churn, undersized all-in raises, short blinds, blackjack settlement,
 insurance payouts, bankroll accounting, stake changes landing on the right
 round, plus end-to-end runs of both games against a mocked OpenRouter —
 including a model that only ever returns garbage, to prove the fallback path
@@ -199,7 +230,24 @@ src/
   preload/            context-isolated IPC bridge
   renderer/           React UI
   shared/             types and card primitives used by both sides
+scripts/
+  make-icon.cjs       renders resources/icon.png, the source of every app icon
+  screenshot.mjs      drives the built app and captures the main views
+  afterpack-adhoc-sign.cjs   ad-hoc signs the macOS bundle at package time
 ```
+
+## Screenshots
+
+```bash
+npm run build && npm run screenshot   # -> screenshots/*.png
+```
+
+Launches the real app with an isolated profile and a mocked OpenRouter, plays a
+blackjack round and a few poker hands, and photographs each view. CI runs it on
+all three platforms and uploads the results, which is the only practical way to
+catch layout breakage on an OS you do not have — font metrics differ per
+platform, and several bugs here (clipped seats, an overlapping stats bar) were
+only ever visible in a rendered frame.
 
 Costs are real: every decision is a paid API call. Set a spend limit on your
 OpenRouter key, watch the Usage tab, and use the "stop after N rounds" setting

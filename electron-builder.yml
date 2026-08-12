@@ -7,6 +7,10 @@ files:
   - out/**
   - package.json
   - '!**/*.map'
+# All platform icons are derived from resources/icon.png; run `npm run icon` to
+# regenerate it from scripts/make-icon.cjs.
+afterPack: scripts/afterpack-adhoc-sign.cjs
+
 win:
   target:
     - target: nsis
@@ -23,3 +27,34 @@ nsis:
   shortcutName: LLM Cardroom
 portable:
   artifactName: LLM-Cardroom-${version}-portable.${ext}
+
+mac:
+  category: public.app-category.card-games
+  # There is no Apple Developer ID for this project. `null` makes
+  # electron-builder skip signing altogether, which would leave an Apple
+  # Silicon build that refuses to launch — scripts/afterpack-adhoc-sign.cjs
+  # applies the ad-hoc signature that arm64 requires.
+  identity: null
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  artifactName: LLM-Cardroom-${version}-mac-${arch}.${ext}
+dmg:
+  artifactName: LLM-Cardroom-${version}-mac-${arch}.${ext}
+
+linux:
+  category: Game
+  # deb requires a maintainer in "Name <email>" form; deliberately not a
+  # personal address.
+  maintainer: llm-cardroom <noreply@users.noreply.github.com>
+  desktop:
+    entry:
+      Categories: Game;CardGame;
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  artifactName: LLM-Cardroom-${version}-linux-${arch}.${ext}

@@ -1,10 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { MatchEvent, MatchSettings, ModelInfo } from '../shared/types.ts'
+import type { KeyStorageKind, MatchEvent, MatchSettings, ModelInfo } from '../shared/types.ts'
 
 export interface ConfigPayload {
   hasApiKey: boolean
   settings: MatchSettings
   configPath: string
+  /** How well the key is protected at rest, which varies by OS. */
+  keyStorage: KeyStorageKind
 }
 
 const api = {

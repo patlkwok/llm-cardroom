@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   defaultSettings,
   type DecisionRecord,
+  type KeyStorageKind,
   type LogEntry,
   type MatchSettings,
   type MatchSnapshot,
@@ -41,6 +42,7 @@ export function App(): React.JSX.Element {
   const [settings, setSettings] = useState<MatchSettings>(defaultSettings())
   const [hasApiKey, setHasApiKey] = useState(false)
   const [keyCheck, setKeyCheck] = useState<KeyCheck>({ state: 'unknown', detail: '' })
+  const [keyStorage, setKeyStorage] = useState<KeyStorageKind>('os-keychain')
   const [snapshot, setSnapshot] = useState<MatchSnapshot | null>(null)
   const [log, setLog] = useState<LogEntry[]>([])
   const [decisions, setDecisions] = useState<DecisionRecord[]>([])
@@ -57,6 +59,7 @@ export function App(): React.JSX.Element {
       const config = await window.cardroom.getConfig()
       setSettings(config.settings)
       setHasApiKey(config.hasApiKey)
+      setKeyStorage(config.keyStorage)
       setLoaded(true)
 
       // A saved key is not necessarily a working key: check it up front rather
@@ -162,6 +165,7 @@ export function App(): React.JSX.Element {
         status={status}
         hasApiKey={hasApiKey}
         keyCheck={keyCheck}
+        keyStorage={keyStorage}
         seatedPlayerIds={seatedPlayerIds}
         onSaveApiKey={async (key) => {
           const result = await window.cardroom.setApiKey(key)

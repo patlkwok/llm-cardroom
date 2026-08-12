@@ -32,7 +32,13 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Segoe UI', 'Inter', system-ui, -apple-system, sans-serif;
+  /* system-ui first so each OS supplies its own UI font — 'Segoe UI' exists
+     only on Windows, so leading with it left macOS and Linux falling through to
+     an arbitrary default. The named fallbacks are for Linux, where fontconfig
+     often resolves system-ui to DejaVu Sans, whose wider metrics crowd the
+     tighter table layouts. */
+  font-family: system-ui, -apple-system, 'Segoe UI', Inter, 'Noto Sans',
+    Cantarell, Ubuntu, 'Helvetica Neue', Arial, sans-serif;
   font-size: 13px;
   overflow: hidden;
   user-select: none;

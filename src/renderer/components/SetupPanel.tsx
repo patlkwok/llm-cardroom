@@ -3,6 +3,7 @@ import type { KeyCheck } from '../App.tsx'
 import {
   REASONING_EFFORTS,
   type GameKind,
+  type KeyStorageKind,
   type MatchSettings,
   type MatchStatus,
   type PlayerConfig,
@@ -15,6 +16,7 @@ interface Props {
   status: MatchStatus
   hasApiKey: boolean
   keyCheck: KeyCheck
+  keyStorage: KeyStorageKind
   /** Players already dealt in; their setup is fixed for the rest of the match. */
   seatedPlayerIds: string[]
   onSaveApiKey: (key: string) => Promise<void>
@@ -65,6 +67,7 @@ export function SetupPanel(props: Props): React.JSX.Element {
       <ApiKeySection
         hasApiKey={hasApiKey}
         keyCheck={props.keyCheck}
+        keyStorage={props.keyStorage}
         onSave={props.onSaveApiKey}
         onVerify={props.onVerifyApiKey}
       />
@@ -449,17 +452,43 @@ const KEY_BADGE: Record<KeyCheck['state'], { text: string; className: string }> 
   bad: { text: 'key rejected', className: 'badge-bad' }
 }
 
+/**
+ * What the app can honestly claim about the key on disk. Only the keychain case
+ * is real encryption; the Linux fallback is obfuscation with a hardcoded key,
+ * so it gets a warning rather than reassurance.
+ */
+const KEY_STORAGE_NOTE: Record<KeyStorageKind, { text: string; warn: boolean }> = {
+  'os-keychain': {
+    text: "Stored in this machine's credential store.",
+    warn: false
+  },
+  obfuscated: {
+    text:
+      'No desktop keyring was found, so the key is only obfuscated in the ' +
+      'config file — not encrypted. Install gnome-keyring or KWallet for real ' +
+      'protection.',
+    warn: true
+  },
+  plaintext: {
+    text: 'This system offers no encryption, so the key is stored as clear text.',
+    warn: true
+  }
+}
+
 function ApiKeySection({
   hasApiKey,
   keyCheck,
+  keyStorage,
   onSave,
   onVerify
 }: {
   hasApiKey: boolean
   keyCheck: KeyCheck
+  keyStorage: KeyStorageKind
   onSave: (key: string) => Promise<void>
   onVerify: (key: string) => Promise<{ ok: boolean; detail: string }>
 }): React.JSX.Element {
+  const storageNote = KEY_STORAGE_NOTE[keyStorage]
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [status, setStatus] = useState('')
@@ -527,8 +556,15 @@ function ApiKeySection({
               </button>
             )}
           </div>
-          <p className="panel-hint">
-            Stored encrypted on this machine.{' '}
+        </>
+      )}
+
+      {/* A weak-storage warning stays visible with the form closed: hiding it
+          behind "Replace API key" would mean nobody ever reads it. */}
+      {(open || storageNote.warn) && (
+        <p className={storageNote.warn ? 'panel-warn' : 'panel-hint'}>
+          {storageNote.text}{' '}
+          {open && (
             <a
               href="#"
               onClick={(event) => {
@@ -538,8 +574,8 @@ function ApiKeySection({
             >
               Get a key
             </a>
-          </p>
-        </>
+          )}
+        </p>
       )}
       {status && <p className="panel-status">{status}</p>}
       {status.startsWith('Key accepted') && (

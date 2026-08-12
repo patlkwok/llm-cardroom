@@ -1,7 +1,7 @@
 import { app, safeStorage } from 'electron'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import { defaultSettings, type MatchSettings } from '../shared/types.ts'
+import { defaultSettings, type KeyStorageKind, type MatchSettings } from '../shared/types.ts'
 
 /**
  * Only the API key is persisted. Table setup deliberately is not: every launch
@@ -9,9 +9,12 @@ import { defaultSettings, type MatchSettings } from '../shared/types.ts'
  * whatever was being tried last time.
  */
 interface StoredConfig {
-  /** Base64 of the DPAPI-encrypted key when encryption is available. */
+  /**
+   * Base64 of the key as encrypted by Electron `safeStorage`, which means DPAPI
+   * on Windows, the Keychain on macOS, and a keyring on Linux.
+   */
   apiKeyEncrypted?: string
-  /** Only used when the OS keychain is unavailable. */
+  /** Only used when no encryption backend is available at all. */
   apiKeyPlain?: string
 }
 
@@ -61,7 +64,8 @@ export function setApiKey(key: string): void {
 
   const trimmed = key.trim()
   if (trimmed) {
-    // Prefer the OS keychain so the key is not sitting in a readable file.
+    // Prefer the OS credential store so the key is not sitting in a readable
+    // file. On Linux this can still be the weak backend — see keyStorageKind.
     if (safeStorage.isEncryptionAvailable()) {
       stored.apiKeyEncrypted = safeStorage.encryptString(trimmed).toString('base64')
     } else {
@@ -73,6 +77,25 @@ export function setApiKey(key: string): void {
 
 export function hasApiKey(): boolean {
   return getApiKey().length > 0
+}
+
+/**
+ * What the key's storage is actually worth on this machine.
+ *
+ * Windows and macOS always give a real credential store. Linux does not: with
+ * no desktop keyring installed, Electron selects its `basic_text` backend,
+ * which still reports `isEncryptionAvailable() === true` while "encrypting"
+ * with a key compiled into Chromium. That is obfuscation, and the UI says so
+ * rather than claiming the key is encrypted.
+ *
+ * Must be called after `app.whenReady()`.
+ */
+export function keyStorageKind(): KeyStorageKind {
+  if (!safeStorage.isEncryptionAvailable()) return 'plaintext'
+  if (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') {
+    return 'obfuscated'
+  }
+  return 'os-keychain'
 }
 
 /** Every launch begins with an empty table; nothing here is read from disk. */

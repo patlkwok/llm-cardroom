@@ -1,0 +1,137 @@
+name: build
+
+# Cross-platform packaging happens here because it cannot happen anywhere else:
+# a macOS dmg needs macOS to build and sign, and the author only has Windows.
+# The screenshot job exists for the same reason — it is the only way to see how
+# the app actually renders on macOS and Linux.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: tests + typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  package:
+    name: package (${{ matrix.os }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      # Electron's binary arrives via a postinstall script. npm's allow-scripts
+      # policy can silently skip it, leaving a package that builds but cannot
+      # run — fail here with an explanation rather than later with a mystery.
+      - name: Check the Electron binary actually installed
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('node:fs');
+            const p = require('electron');
+            if (typeof p !== 'string' || !fs.existsSync(p)) {
+              console.error('Electron binary missing: postinstall did not run.');
+              console.error('Check the allowScripts field in package.json.');
+              process.exit(1);
+            }
+            console.log('electron binary at', p);
+          "
+
+      - run: npm run build
+
+      - name: Install xvfb
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      # Never block the installers on a screenshot failure: the artifacts are
+      # still worth having, and a failed step stays visible in the run.
+      - name: Screenshots (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: xvfb-run --auto-servernum npm run screenshot
+
+      - name: Screenshots
+        if: runner.os != 'Linux'
+        continue-on-error: true
+        run: npm run screenshot
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-${{ matrix.os }}
+          path: screenshots/
+          if-no-files-found: warn
+
+      # `npm run dist` would rebuild what the step above just built.
+      - name: Package
+        run: npx electron-builder --publish never
+        env:
+          # There is no Developer ID for this project; mac.identity is null and
+          # scripts/afterpack-adhoc-sign.cjs applies the ad-hoc signature that
+          # Apple Silicon requires. This stops electron-builder picking up some
+          # unrelated certificate if one is ever present on a runner.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: error
+
+  release:
+    name: attach to release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          merge-multiple: true
+          path: dist
+
+      # gh is preinstalled on the runners, so no third-party action is needed.
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            || gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+                 --title "${GITHUB_REF_NAME}" --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" --clobber

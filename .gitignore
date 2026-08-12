@@ -4,6 +4,9 @@ out/
 release/
 dist/
 
+# Captured by `npm run screenshot`; CI keeps them as artifacts instead.
+screenshots/
+
 # TypeScript incremental build state
 *.tsbuildinfo
 

@@ -2,6 +2,19 @@ import type { Card } from './cards.ts'
 
 export type GameKind = 'blackjack' | 'poker'
 
+/**
+ * How well the stored API key is actually protected at rest. This differs by
+ * OS, and on Linux it differs by whether a desktop keyring is installed, so the
+ * UI has to be told rather than assuming "encrypted".
+ */
+export type KeyStorageKind =
+  /** A real credential store: DPAPI, macOS Keychain, or a Linux keyring. */
+  | 'os-keychain'
+  /** Linux with no keyring: obfuscated with a hardcoded key, not protected. */
+  | 'obfuscated'
+  /** No encryption available at all; the key is on disk in clear text. */
+  | 'plaintext'
+
 /* ------------------------------------------------------------------ models */
 
 export interface ModelInfo {

@@ -7,6 +7,7 @@ import {
   getApiKey,
   getSettings,
   hasApiKey,
+  keyStorageKind,
   setApiKey
 } from './config.ts'
 import type { MatchEvent, MatchSettings, ModelInfo } from '../shared/types.ts'
@@ -63,7 +64,8 @@ function registerIpc(): void {
   ipcMain.handle('config:get', () => ({
     hasApiKey: hasApiKey(),
     settings: getSettings(),
-    configPath: configFileLocation()
+    configPath: configFileLocation(),
+    keyStorage: keyStorageKind()
   }))
 
   ipcMain.handle('config:setApiKey', (_event, key: string) => {
