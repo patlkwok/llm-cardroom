@@ -16,6 +16,7 @@ import type { AskRequest, DriverContext, GameDriver, LiveSettings, RosterTable }
 import { BlackjackDriver } from './drivers/blackjack.ts'
 import { HeartsDriver } from './drivers/hearts.ts'
 import { PokerDriver } from './drivers/poker.ts'
+import { TwentyFourDriver } from './drivers/twentyfour.ts'
 
 export type Emit = (event: MatchEvent) => void
 
@@ -33,7 +34,8 @@ type DriverClass = new (ctx: DriverContext, settings: MatchSettings) => GameDriv
 const DRIVERS: Partial<Record<GameKind, DriverClass>> = {
   blackjack: BlackjackDriver,
   poker: PokerDriver,
-  hearts: HeartsDriver
+  hearts: HeartsDriver,
+  twentyfour: TwentyFourDriver
 }
 
 /**

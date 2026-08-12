@@ -94,6 +94,43 @@ function installOpenRouterMock() {
         // show points changing hands rather than thirteen quiet tricks.
         const juicy = options.find((c) => c.endsWith('h') || c === 'Qs')
         answer = { card: juicy || options[0] }
+      } else if (body.includes('What is your expression?')) {
+        // The 24 puzzle. A canned expression would be graded wrong every round
+        // and the captured board would be a wall of red, so the mock actually
+        // solves the deal — the same collapse-a-pair brute force as the engine,
+        // small enough to inline here. One seat is left deliberately wrong so
+        // the frame shows both verdicts.
+        const line = (body.match(/Make 24 using ([\d, ]+)/) || ['', ''])[1]
+        const values = line.split(',').map((n) => Number(n.trim())).filter((n) => !isNaN(n))
+        const solveFor = (terms) => {
+          if (terms.length === 1) {
+            return Math.abs(terms[0].v - 24) < 1e-9 ? terms[0].t : null
+          }
+          for (let i = 0; i < terms.length; i++) {
+            for (let j = 0; j < terms.length; j++) {
+              if (i === j) continue
+              const a = terms[i]
+              const b = terms[j]
+              const rest = terms.filter((_, k) => k !== i && k !== j)
+              const options = [
+                [a.v + b.v, `${a.t} + ${b.t}`],
+                [a.v - b.v, `${a.t} - ${b.t}`],
+                [a.v * b.v, `${a.t} * ${b.t}`]
+              ]
+              if (Math.abs(b.v) > 1e-9) options.push([a.v / b.v, `${a.t} / ${b.t}`])
+              for (const [v, t] of options) {
+                const found = solveFor([...rest, { v, t: `(${t})` }])
+                if (found) return found
+              }
+            }
+          }
+          return null
+        }
+        const solution = values.length === 4 ? solveFor(values.map((v) => ({ v, t: String(v) }))) : null
+        globalThis.__mock24Seat = ((globalThis.__mock24Seat || 0) + 1) % 4
+        answer = globalThis.__mock24Seat === 0
+          ? { expression: values.join(' + ') }
+          : { expression: solution || 'none' }
       } else if (globalThis.__mockPrefer) {
         // Take the first preferred action the prompt actually offers, so a
         // capture can steer the table towards a state — a split, say — without
@@ -236,6 +273,23 @@ async function main() {
       { timeout: 120000 }
     )
     await shoot(win, '06-hearts-trick.png')
+    await stopMatch(win)
+
+    // --- the 24 puzzle ----------------------------------------------------
+    // Six seats, the maximum: this is the game where every seat answers every
+    // round, so a full table is both the widest board and the most expensive
+    // arrangement. Still shot at the short viewport, for the same reason.
+    await win.click('.segmented button:has-text("24")')
+    for (let i = 0; i < 6; i++) await seatModel(win, i)
+    await win.fill('input[type="range"]', '600')
+
+    await win.click('.start-button')
+    await waitForCounter(win, /Puzzle [1-9]/)
+    // A *settled* round is the informative state: every answer graded, the
+    // winner marked and the solution revealed. Waiting for the solution chip
+    // is what guarantees the round is over rather than still being answered.
+    await win.waitForSelector('.tf-solution', { timeout: 120000 })
+    await shoot(win, '07-twentyfour-round.png')
     await stopMatch(win)
     await win.setViewportSize({ width: 1440, height: 940 })
 

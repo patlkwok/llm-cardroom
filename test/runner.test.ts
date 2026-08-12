@@ -1,6 +1,7 @@
 import test, { afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { MatchRunner } from '../src/main/games/runner.ts'
+import { solve } from '../src/main/games/twentyfour/solver.ts'
 import { defaultSettings, tableOf, type MatchEvent, type MatchSettings } from '../src/shared/types.ts'
 
 const realFetch = globalThis.fetch
@@ -1629,4 +1630,350 @@ test('a model that cannot answer a hearts prompt still finishes the hand', async
     0,
     'and the hand still scored properly'
   )
+})
+
+/* ------------------------------------------------------------ 24 puzzle */
+
+function twentyFourSettings(
+  playerCount = 3,
+  overrides: Partial<MatchSettings> = {}
+): MatchSettings {
+  const base = defaultSettings()
+  return {
+    ...base,
+    game: 'twentyfour',
+    stepDelayMs: 0,
+    maxRounds: 3,
+    twentyfour: { ...base.twentyfour, targetScore: 0 },
+    players: Array.from({ length: playerCount }, (_, i) => ({
+      id: `p${i}`,
+      name: `Bot${i}`,
+      modelId: 'test/model',
+      modelName: 'Test',
+      reasoningEffort: 'default' as const
+    })),
+    ...overrides
+  }
+}
+
+/** Answers the puzzle by actually solving it from the prompt's own numbers. */
+function respondTwentyFour(prompt: string): string {
+  const line = prompt.match(/Make 24 using ([\d, ]+) —/)
+  if (!line) return JSON.stringify({ reasoning: 'No idea.', expression: 'none' })
+  const values = line[1].split(',').map((n) => Number(n.trim()))
+  const solution = solve(values)
+  return JSON.stringify({
+    reasoning: solution ? 'Found one.' : 'This one cannot be done.',
+    expression: solution ?? 'none'
+  })
+}
+
+test('a 24 round asks every model at once and lands every answer', async () => {
+  const sink = capture()
+  mockOpenRouter(respondTwentyFour, sink)
+
+  await new MatchRunner(twentyFourSettings(4, { maxRounds: 3 }), 'test-key', sink.emit).run()
+
+  const snapshot = finalSnapshot(sink)
+  assert.equal(snapshot.status, 'finished')
+  const tf = tableOf(snapshot, 'twentyfour')
+  assert.ok(tf)
+  assert.equal(tf.roundsPlayed, 3)
+  assert.equal(tf.results.length, 4, 'every seat has a result for the last round')
+
+  // Unlike poker, nobody folds and stops being asked: every seat answers every
+  // puzzle, so the call count is seats x rounds exactly.
+  const decisions = sink.events.filter((e) => e.type === 'decision')
+  assert.equal(decisions.length, 4 * 3, 'four calls per puzzle, every puzzle')
+
+  for (const player of tf.players) {
+    assert.equal(player.roundsPlayed, 3, `${player.name} answered every puzzle`)
+    // A model that solves whatever is solvable is right every time.
+    assert.equal(player.solved, 3, `${player.name} should have solved all three`)
+    assert.equal(player.wrong + player.invalid, 0, `${player.name} answered cleanly`)
+  }
+
+  // Exactly one seat takes each round.
+  const totalScore = tf.players.reduce((sum, p) => sum + p.score, 0)
+  assert.equal(totalScore, 3, 'one winner per puzzle')
+})
+
+test('every model is dispatched before any of them is awaited', async () => {
+  // Any `await` inside the dispatch loop would hand the earlier models a head
+  // start. Holding every request open until all have arrived proves they were
+  // all in flight together: if the driver awaited one at a time this deadlocks
+  // and the test times out.
+  const sink = capture()
+  const seats = 4
+  let inFlight = 0
+  let peak = 0
+  let release: (() => void) | null = null
+  const allDispatched = new Promise<void>((resolve) => {
+    release = resolve
+  })
+
+  globalThis.fetch = (async (_url: string, init: { body: string }) => {
+    inFlight++
+    peak = Math.max(peak, inFlight)
+    if (inFlight >= seats) release?.()
+    await allDispatched
+    inFlight--
+
+    const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> }
+    const prompt = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: respondTwentyFour(prompt) } }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0.0001 }
+      })
+    }
+  }) as unknown as typeof fetch
+
+  await new MatchRunner(twentyFourSettings(seats, { maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  assert.equal(peak, seats, `all ${seats} calls should be in flight at once, peaked at ${peak}`)
+  assert.equal(finalSnapshot(sink).status, 'finished')
+})
+
+test('a fatal error during a simultaneous round still stops the match', async () => {
+  // `failFast` works elsewhere because the awaits are sequential and a throw
+  // propagates. Under Promise.allSettled nothing propagates, so without an
+  // explicit scan a 401 becomes every model quietly falling back — exactly the
+  // failure the account-errors-are-fatal rule exists to prevent.
+  const sink = capture()
+  mockHttpFailure(401, '{"error":{"message":"No auth credentials found"}}')
+
+  await new MatchRunner(twentyFourSettings(4, { maxRounds: 20 }), 'bad-key', sink.emit).run()
+
+  const final = finalSnapshot(sink)
+  assert.equal(final.status, 'error', 'the match ends in an error state')
+  assert.match(final.errorText ?? '', /rejected the API key \(401\)/)
+  assert.ok(
+    (tableOf(final, 'twentyfour')?.roundsPlayed ?? 99) === 0,
+    'it stops on the first puzzle rather than grinding through twenty'
+  )
+  const decisions = sink.events.filter((e) => e.type === 'decision')
+  assert.equal(decisions.length, 0, 'no decision is recorded for a fatal failure')
+})
+
+test('exhausted credits stop a simultaneous round too', async () => {
+  const sink = capture()
+  mockHttpFailure(402, '{"error":{"message":"Insufficient credits"}}')
+
+  await new MatchRunner(twentyFourSettings(3, { maxRounds: 10 }), 'test-key', sink.emit).run()
+
+  const final = finalSnapshot(sink)
+  assert.equal(final.status, 'error')
+  assert.match(final.errorText ?? '', /insufficient credits \(402\)/i)
+})
+
+test('the round goes to the fastest correct answer, not the fastest answer', async () => {
+  const sink = capture()
+  // Bot0 answers instantly but wrongly; Bot1 is slower and right.
+  globalThis.fetch = (async (_url: string, init: { body: string }) => {
+    const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> }
+    const prompt = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+    const fast = prompt.includes('Bot0') || !prompt.includes('Your record')
+    const reply = fast
+      ? JSON.stringify({ reasoning: 'Guessing.', expression: '1 + 1' })
+      : respondTwentyFour(prompt)
+    if (!fast) await new Promise((r) => setTimeout(r, 25))
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: reply } }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0 }
+      })
+    }
+  }) as unknown as typeof fetch
+
+  await new MatchRunner(twentyFourSettings(2, { maxRounds: 2 }), 'test-key', sink.emit).run()
+
+  const tf = tableOf(finalSnapshot(sink), 'twentyfour')
+  assert.ok(tf)
+  for (const result of tf.results) {
+    if (result.verdict === 'wrong') {
+      assert.equal(result.won, false, 'a wrong answer never takes the round however fast it was')
+      assert.equal(result.rank, 0)
+    }
+  }
+})
+
+test('the 24 solution never reaches a prompt', async () => {
+  const sink = capture()
+  mockOpenRouter(respondTwentyFour, sink)
+
+  await new MatchRunner(twentyFourSettings(3, { maxRounds: 4 }), 'test-key', sink.emit).run()
+
+  // Spectator-only, exactly like poker win probability. The prompt legitimately
+  // contains the four numbers, so grep for the worked expression instead: a
+  // solution always contains an operator between bracketed terms.
+  for (const prompt of sink.prompts) {
+    assert.ok(!prompt.includes(' = 24'), `a worked answer leaked into a prompt:\n${prompt}`)
+    assert.ok(!/Solution:/i.test(prompt), 'the solver output must never be shown to a model')
+    assert.ok(
+      !/no solution exist/i.test(prompt),
+      'a model must not be told in advance that a deal is impossible'
+    )
+  }
+  for (const system of sink.systemPrompts) {
+    assert.ok(!system.includes('Solution:'))
+  }
+})
+
+test('the pinned 24 rules are stated in force', async () => {
+  const sink = capture()
+  mockOpenRouter(respondTwentyFour, sink)
+
+  await new MatchRunner(twentyFourSettings(2, { maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  assert.ok(sink.systemPrompts.length > 0)
+  for (const system of sink.systemPrompts) {
+    // The face-card values are a variant choice, and so is exact division.
+    assert.match(system, /ace = 1, jack = 11, queen = 12, king = 13/i)
+    assert.match(system, /EXACTLY ONCE/)
+    assert.match(system, /Division is exact/i)
+    assert.match(system, /Not every deal can be made into 24/i)
+  }
+})
+
+test('an unsolvable deal can be answered with "none", and it scores', async () => {
+  const sink = capture()
+  // Always claim there is no solution, whatever the deal.
+  mockOpenRouter(() => JSON.stringify({ reasoning: 'Cannot be done.', expression: 'none' }), sink)
+
+  await new MatchRunner(twentyFourSettings(2, { maxRounds: 25 }), 'test-key', sink.emit).run()
+
+  const tf = tableOf(finalSnapshot(sink), 'twentyfour')
+  assert.ok(tf)
+  const solved = tf.players.reduce((sum, p) => sum + p.solved, 0)
+  const wrong = tf.players.reduce((sum, p) => sum + p.wrong, 0)
+  // About a quarter of deals are impossible, so over 25 rounds this strategy
+  // should be right sometimes and wrong most of the time.
+  assert.ok(solved > 0, 'some deals really are impossible, and saying so is correct')
+  assert.ok(wrong > solved, 'but most deals are solvable, so it is usually wrong')
+
+  assert.ok(
+    logTexts(sink).some((t) => /correctly says there is no solution/.test(t)),
+    'the log says so when a model spots an impossible deal'
+  )
+  assert.ok(
+    logTexts(sink).some((t) => /That deal had no solution at all/.test(t)),
+    'and the operator is shown which deals were impossible'
+  )
+})
+
+test('a bluffed expression is graded as wrong rather than corrected', async () => {
+  const sink = capture()
+  // A well-formed expression that simply does not make 24.
+  mockOpenRouter(() => JSON.stringify({ reasoning: 'Close enough.', expression: '1+1' }), sink)
+
+  await new MatchRunner(twentyFourSettings(2, { maxRounds: 2 }), 'test-key', sink.emit).run()
+
+  const tf = tableOf(finalSnapshot(sink), 'twentyfour')
+  assert.ok(tf)
+  assert.ok(
+    tf.players.every((p) => p.solved === 0),
+    'a bluff scores nothing'
+  )
+
+  // It must not be retried: retrying bad arithmetic would give one model three
+  // attempts at the puzzle while another got one.
+  const decisions = sink.events.filter((e) => e.type === 'decision')
+  for (const event of decisions) {
+    if (event.type !== 'decision') continue
+    assert.equal(event.record.attempts, 1, 'a wrong answer is judged, not corrected')
+    assert.equal(event.record.fallback, undefined, 'and it is not a fallback either')
+  }
+})
+
+test('the 24 table can seat and unseat models between puzzles', async () => {
+  const sink = capture()
+  mockOpenRouter(respondTwentyFour, sink)
+
+  const settings = twentyFourSettings(2, { maxRounds: 0, stepDelayMs: 12 })
+  const runner = new MatchRunner(settings, 'test-key', sink.emit)
+  const running = runner.run()
+
+  await new Promise((r) => setTimeout(r, 200))
+  runner.applyLiveSettings({
+    ...settings,
+    players: [
+      ...settings.players,
+      { id: 'late', name: 'Latecomer', modelId: 'test/model', modelName: 'Test', reasoningEffort: 'default' as const }
+    ]
+  })
+  await new Promise((r) => setTimeout(r, 120))
+  runner.resume()
+  await new Promise((r) => setTimeout(r, 400))
+  runner.stop()
+  await running
+
+  const tf = tableOf(finalSnapshot(sink), 'twentyfour')
+  assert.ok(tf)
+  assert.equal(tf.players.length, 3, 'the newcomer took a seat')
+  assert.ok(tf.players.some((p) => p.id === 'late'))
+})
+
+test('a rate-limited model is not punished for its retry when the round is scored', async () => {
+  // The ranking decision, pinned. Firing N calls at once is exactly what
+  // provokes 429s, so scoring on total wall clock would let rate limiting decide
+  // rounds for reasons that have nothing to do with the puzzle. The round is
+  // scored on the attempt that actually produced the answer instead.
+  //
+  // Bot0 is rate-limited once, then answers instantly. Bot1 answers correctly
+  // first time, but slowly. Bot0 must win:
+  //   finalAttemptMs — Bot0 ~0ms   beats Bot1 ~400ms   -> Bot0
+  //   latencyMs      — Bot0 ~600ms loses to Bot1 ~400ms -> Bot1
+  // Swap the driver to `result.latencyMs` and this test fails, which is the
+  // only thing separating the decision from a comment.
+  const sink = capture()
+  let call = 0
+
+  globalThis.fetch = (async (_url: string, init: { body: string }) => {
+    const n = ++call
+    // Dispatch is in seat order within one tick, so call 1 is Bot0 and call 2
+    // is Bot1; call 3 is Bot0's retry.
+    if (n === 1) {
+      return { ok: false, status: 429, text: async () => 'slow down', json: async () => ({}) }
+    }
+    if (n === 2) await new Promise((r) => setTimeout(r, 400))
+
+    const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> }
+    const prompt = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: respondTwentyFour(prompt) } }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0 }
+      })
+    }
+  }) as unknown as typeof fetch
+
+  await new MatchRunner(twentyFourSettings(2, { maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  const tf = tableOf(finalSnapshot(sink), 'twentyfour')
+  assert.ok(tf)
+  const byName = new Map(tf.results.map((r) => [r.playerName, r]))
+  const rateLimited = byName.get('Bot0')
+  const slowButClean = byName.get('Bot1')
+  assert.ok(rateLimited && slowButClean, 'both seats answered')
+  assert.equal(rateLimited.verdict, 'correct', 'the retry produced a good answer')
+  assert.equal(slowButClean.verdict, 'correct')
+
+  assert.ok(
+    rateLimited.elapsedMs < slowButClean.elapsedMs,
+    `the retry time must not be counted: Bot0 scored ${rateLimited.elapsedMs}ms ` +
+      `against Bot1's ${slowButClean.elapsedMs}ms`
+  )
+  assert.equal(rateLimited.won, true, 'the rate-limited model still wins the round')
+  assert.equal(tf.players.find((p) => p.name === 'Bot0')?.score, 1)
+
+  // And the retry itself is still reported honestly in the usage stats.
+  const stats = finalSnapshot(sink).stats.find((s) => s.playerId === 'p0')
+  assert.ok((stats?.errors ?? 0) > 0, 'the 429 is still counted as a failed attempt')
 })

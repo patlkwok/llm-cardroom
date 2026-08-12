@@ -8,6 +8,7 @@ import {
 import { BlackjackView, emptyBlackjackState } from './BlackjackView.tsx'
 import { HeartsView, emptyHeartsState } from './HeartsView.tsx'
 import { PokerView, emptyPokerState } from './PokerView.tsx'
+import { TwentyFourView, emptyTwentyFourState } from './TwentyFourView.tsx'
 
 export interface GameViewProps {
   snapshot: MatchSnapshot | null
@@ -40,6 +41,13 @@ export const GAME_VIEWS: Partial<Record<GameKind, GameView>> = {
       state={tableOf(snapshot, 'hearts') ?? emptyHeartsState(settings)}
       thinking={thinking}
       targetScore={settings.hearts.targetScore}
+    />
+  ),
+  twentyfour: ({ snapshot, settings, thinking }) => (
+    <TwentyFourView
+      state={tableOf(snapshot, 'twentyfour') ?? emptyTwentyFourState(settings)}
+      thinking={thinking}
+      targetScore={settings.twentyfour.targetScore}
     />
   )
 }
