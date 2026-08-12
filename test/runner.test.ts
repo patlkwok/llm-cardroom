@@ -1423,3 +1423,210 @@ test('an eliminated player is announced once, not every later hand', async () =>
     assert.equal(n, 1, `"${text}" was logged ${n} times`)
   }
 })
+
+/* ---------------------------------------------------------------- hearts */
+
+function heartsSettings(overrides: Partial<MatchSettings> = {}): MatchSettings {
+  return {
+    ...defaultSettings(),
+    game: 'hearts',
+    stepDelayMs: 0,
+    maxRounds: 2,
+    players: Array.from({ length: 4 }, (_, i) => ({
+      id: `p${i}`,
+      name: `Seat${i}`,
+      modelId: 'test/model',
+      modelName: 'Test',
+      reasoningEffort: 'default' as const
+    })),
+    ...overrides
+  }
+}
+
+/** Answers both hearts decision shapes by reading the prompt the runner built. */
+function respondHearts(prompt: string): string {
+  const pass = prompt.match(/Your hand \(13 cards\): (.+)/)
+  if (pass) {
+    const cards = pass[1].trim().split(/\s+/).slice(0, 3)
+    return JSON.stringify({ reasoning: 'Shedding these three.', pass: cards })
+  }
+  const legal = prompt.match(/^Legal plays: (.+)$/m)
+  if (legal) {
+    const first = legal[1].split(',')[0].trim()
+    return JSON.stringify({ reasoning: `Playing ${first}.`, card: first })
+  }
+  return 'I do not understand the question.'
+}
+
+test('a hearts match runs end to end and conserves cards and points', async () => {
+  const sink = capture()
+  mockOpenRouter(respondHearts, sink)
+
+  await new MatchRunner(heartsSettings({ maxRounds: 3 }), 'test-key', sink.emit).run()
+
+  const snapshot = finalSnapshot(sink)
+  assert.equal(snapshot.status, 'finished')
+  const hearts = tableOf(snapshot, 'hearts')
+  assert.ok(hearts)
+  assert.equal(hearts.handsPlayed, 3, 'played the requested number of hands')
+  assert.equal(hearts.players.length, 4)
+
+  // Every hand distributes exactly 26 points, so three hands is 78 — unless
+  // somebody shot the moon, which pays 26 to each of the other three instead.
+  const total = hearts.players.reduce((sum, p) => sum + p.totalScore, 0)
+  const moons = hearts.players.reduce((sum, p) => sum + p.moonShots, 0)
+  assert.equal(total, 26 * 3 + moons * 52, `points did not balance: ${total} over 3 hands`)
+
+  // 13 tricks a hand, every hand.
+  const trickLines = logTexts(sink).filter((t) => /^Trick \d+ to /.test(t))
+  assert.equal(trickLines.length, 39, `expected 39 tricks over 3 hands, saw ${trickLines.length}`)
+
+  // Cards are all played out: nobody is left holding anything.
+  for (const player of hearts.players) {
+    assert.equal(player.hand.length, 0, `${player.name} still holds cards`)
+  }
+})
+
+test('a hearts model is shown only its own hand', async () => {
+  const sink = capture()
+  mockOpenRouter(respondHearts, sink)
+
+  await new MatchRunner(heartsSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  const playPrompts = sink.prompts.filter((p) => p.includes('Legal plays:'))
+  assert.ok(playPrompts.length > 0, 'the models were asked to play')
+
+  for (const prompt of playPrompts) {
+    assert.equal((prompt.match(/^Your hand: /gm) ?? []).length, 1, 'exactly one hand is yours')
+
+    // The spectator sees all four hands; a model must only ever see its own.
+    // The scoreboard names every seat, so it is the block that would leak.
+    const board = prompt.split('Scores (lowest wins)')[1]?.split('\n\n')[0] ?? ''
+    const leaked = board.match(/\b(10|[2-9TJQKA])[cdhs]\b/g)
+    assert.equal(leaked, null, `another seat's cards leaked into the scoreboard: ${board}`)
+  }
+})
+
+test('the pinned hearts rules are stated in force, not left to be inferred', async () => {
+  const sink = capture()
+  mockOpenRouter(respondHearts, sink)
+
+  await new MatchRunner(heartsSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  assert.ok(sink.systemPrompts.length > 0)
+  for (const system of sink.systemPrompts) {
+    // Variants genuinely disagree on each of these, so a model that guesses one
+    // plays a different game from the one being dealt.
+    assert.match(system, /queen of spades does NOT break hearts/i)
+    assert.match(system, /LOWEST total score wins/i)
+    assert.match(system, /NO POINTS may be played on the first trick/i)
+    assert.match(system, /two of clubs always leads the first trick/i)
+    assert.match(system, /score 0 while every other/i)
+  }
+})
+
+test('a forced hearts play is narrated but never charged to a model', async () => {
+  const sink = capture()
+  mockOpenRouter(respondHearts, sink)
+
+  await new MatchRunner(heartsSettings({ maxRounds: 2 }), 'test-key', sink.emit).run()
+
+  const hearts = tableOf(finalSnapshot(sink), 'hearts')
+  assert.ok(hearts)
+  assert.equal(hearts.totalPlays, 104, 'two hands is 104 plays')
+  assert.ok(hearts.forcedPlays > 0, 'forced plays should occur — the opening lead alone is one')
+
+  // Narrated in the table log: a silent gap would be worse than the call.
+  const forcedLines = logTexts(sink).filter((t) => t.includes('(forced'))
+  assert.equal(forcedLines.length, hearts.forcedPlays, 'every forced play is logged')
+
+  // But kept out of the Reasoning feed, which is for decisions.
+  const plays = sink.events.filter(
+    (e) => e.type === 'decision' && e.record.actionLabel.startsWith('plays ')
+  )
+  assert.equal(
+    plays.length,
+    hearts.totalPlays - hearts.forcedPlays,
+    'a forced play must not be recorded as a decision'
+  )
+  assert.ok(
+    logTexts(sink).some((t) => /\d+ of \d+ plays so far were forced/.test(t)),
+    'the operator is told how much came free'
+  )
+})
+
+test('hearts refuses to start without exactly four models', async () => {
+  for (const count of [3, 5]) {
+    const sink = capture()
+    mockOpenRouter(respondHearts, sink)
+
+    const settings = heartsSettings()
+    const players = [...settings.players]
+    while (players.length < count) {
+      players.push({
+        id: `x${players.length}`,
+        name: `Extra${players.length}`,
+        modelId: 'test/model',
+        modelName: 'Test',
+        reasoningEffort: 'default' as const
+      })
+    }
+    settings.players = players.slice(0, count)
+
+    await new MatchRunner(settings, 'test-key', sink.emit).run()
+
+    const final = finalSnapshot(sink)
+    assert.equal(final.status, 'error', `${count} models should be refused`)
+    assert.match(final.errorText ?? '', /exactly 4 models/)
+  }
+})
+
+test('a hearts table never seats or unseats anybody mid-match', async () => {
+  const sink = capture()
+  mockOpenRouter(respondHearts, sink)
+
+  const settings = heartsSettings({ maxRounds: 0, stepDelayMs: 12 })
+  const runner = new MatchRunner(settings, 'test-key', sink.emit)
+  const running = runner.run()
+
+  await new Promise((r) => setTimeout(r, 250))
+  // A fixed-roster game opts out of the reconciliation machinery entirely, so
+  // neither of these may do anything at all.
+  runner.applyLiveSettings({ ...settings, players: settings.players.slice(0, 3) })
+  runner.applyLiveSettings({
+    ...settings,
+    players: [
+      ...settings.players,
+      { id: 'late', name: 'Latecomer', modelId: 'test/model', modelName: 'Test', reasoningEffort: 'default' as const }
+    ]
+  })
+  await new Promise((r) => setTimeout(r, 400))
+  runner.stop()
+  await running
+
+  const texts = logTexts(sink)
+  assert.ok(!texts.some((t) => t.includes('joins the table')), 'nobody may join')
+  assert.ok(!texts.some((t) => t.includes('leaves the table')), 'nobody may leave')
+  assert.ok(!texts.some((t) => t.includes('will join next')), 'the table is never paused for an arrival')
+
+  const hearts = tableOf(finalSnapshot(sink), 'hearts')
+  assert.equal(hearts?.players.length, 4, 'still exactly four seats')
+})
+
+test('a model that cannot answer a hearts prompt still finishes the hand', async () => {
+  const sink = capture()
+  mockOpenRouter(() => 'Sorry, I would rather not.')
+
+  await new MatchRunner(heartsSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  const snapshot = finalSnapshot(sink)
+  assert.equal(snapshot.status, 'finished', 'the table kept moving')
+  const hearts = tableOf(snapshot, 'hearts')
+  assert.ok(hearts)
+  assert.equal(hearts.handsPlayed, 1)
+  assert.equal(
+    hearts.players.reduce((sum, p) => sum + p.totalScore, 0) % 26,
+    0,
+    'and the hand still scored properly'
+  )
+})

@@ -6,6 +6,7 @@ import {
   type TableState
 } from '../../shared/types.ts'
 import { BlackjackView, emptyBlackjackState } from './BlackjackView.tsx'
+import { HeartsView, emptyHeartsState } from './HeartsView.tsx'
 import { PokerView, emptyPokerState } from './PokerView.tsx'
 
 export interface GameViewProps {
@@ -32,6 +33,13 @@ export const GAME_VIEWS: Partial<Record<GameKind, GameView>> = {
     <PokerView
       state={tableOf(snapshot, 'poker') ?? emptyPokerState(settings)}
       thinking={thinking}
+    />
+  ),
+  hearts: ({ snapshot, settings, thinking }) => (
+    <HeartsView
+      state={tableOf(snapshot, 'hearts') ?? emptyHeartsState(settings)}
+      thinking={thinking}
+      targetScore={settings.hearts.targetScore}
     />
   )
 }

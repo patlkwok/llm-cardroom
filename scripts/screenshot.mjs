@@ -75,6 +75,25 @@ function installOpenRouterMock() {
       let answer = { action: globalThis.__mockAction }
       if (body.includes('Do you take insurance?')) {
         answer = { insurance: false }
+      } else if (body.includes('Which 3 cards do you pass?')) {
+        // Hearts passing is the one decision that returns a set. Answering it
+        // with an `action` fails three times and lands on a fallback, which
+        // then shows up in the frame as if the app had misbehaved.
+        // The body is JSON, so a newline in the prompt is a literal backslash-n
+        // and `[^"\\]` is what stops the capture at the end of the line. Note
+        // the single backslashes: `\\(` here would match a literal backslash,
+        // which is how the first version of this silently passed one card and
+        // put a wall of fallbacks into the captured frame.
+        const hand = (body.match(/Your hand \(13 cards\): ([^"\\]*)/) || ['', ''])[1]
+        answer = { pass: hand.trim().split(/\s+/).slice(0, 3) }
+      } else if (body.includes('Legal plays:')) {
+        // Hearts play: name one of the cards actually on offer.
+        const plays = (body.match(/Legal plays: ([^"\\]*)/) || ['', ''])[1]
+        const options = plays.split(',').map((c) => c.trim()).filter(Boolean)
+        // Prefer a heart or the queen when one is legal, so captured frames
+        // show points changing hands rather than thirteen quiet tricks.
+        const juicy = options.find((c) => c.endsWith('h') || c === 'Qs')
+        answer = { card: juicy || options[0] }
       } else if (globalThis.__mockPrefer) {
         // Take the first preferred action the prompt actually offers, so a
         // capture can steer the table towards a state — a split, say — without
@@ -188,6 +207,37 @@ async function main() {
     await win.waitForSelector('.seat-showdown', { timeout: 120000 })
     await shoot(win, '05-poker-showdown.png')
     await stopMatch(win)
+
+    // --- hearts -----------------------------------------------------------
+    // Width is what breaks this felt: four hands of thirteen cards on a felt
+    // only ~630px wide at the smallest supported window. Shot SHORT and narrow
+    // for the same reason the blackjack split is — a roomy frame proves nothing.
+    await win.click('.segmented button:has-text("Hearts")')
+    for (let i = 0; i < 4; i++) await seatModel(win, i)
+    await win.fill('input[type="range"]', '500')
+    await win.setViewportSize({ width: 1360, height: 700 })
+
+    await win.click('.start-button')
+    await waitForCounter(win, /Hand [1-9]/)
+    // The frame worth having is a nearly complete trick with the hands still
+    // full: it shows the fans, the trick and the seat plates all at once.
+    // Two earlier attempts prove why this is a compound condition rather than a
+    // selector. Waiting for the first `.hearts-trick-play` caught a single card
+    // on an otherwise bare table; waiting for `.hearts-trick-result` caught
+    // trick 13 of 13, where every hand reads "out of cards" and the fans — the
+    // whole width risk this capture exists to check — are not on screen at all.
+    await win.waitForFunction(
+      () => {
+        const played = document.querySelectorAll('.hearts-trick-play').length
+        const fan = document.querySelector('.card-fan')
+        return played >= 3 && (fan ? fan.children.length : 0) >= 6
+      },
+      null,
+      { timeout: 120000 }
+    )
+    await shoot(win, '06-hearts-trick.png')
+    await stopMatch(win)
+    await win.setViewportSize({ width: 1440, height: 940 })
 
     console.log(`\nScreenshots written to ${OUT_DIR}`)
   } finally {

@@ -842,8 +842,12 @@ button:disabled {
 }
 
 /* text-overflow is ignored on a flex container, so the text needs its own
-   element and both need min-width: 0 to shrink below their content. */
-.bj-seat .seat-name-text {
+   element and both need min-width: 0 to shrink below their content.
+   Deliberately unscoped: this was copied per view, and the third view to be
+   added simply forgot it and wrapped a long name onto two lines. `.seat-name`
+   is a flex container in every view, so the rule belongs to the pair, not to
+   any one felt. */
+.seat-name-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1037,6 +1041,241 @@ button:disabled {
   color: #ff9aa2;
 }
 
+/* ----------------------------------------------------------------- hearts */
+
+/* Four seats, thirteen cards each, on a felt only ~630px wide at the smallest
+   supported window. Width is the layout risk in this game, not seat count: a
+   compass layout with east and west hands does not fit, so the seats stack as
+   strips and the trick sits beside them. */
+.felt-hearts {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 18px 18px 16px;
+  gap: 10px;
+}
+
+.hearts-table {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  /* Same lesson as the blackjack felt: a flex column overflows out of its LAST
+     child, so the middle child must be allowed to shrink. `min-height: 0` is
+     the whole fix — `flex: 1 1 auto` alone does nothing, because a flex item's
+     default `min-height: auto` refuses to shrink below its content. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.hearts-seats {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.hearts-seat {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: rgba(0, 0, 0, 0.22);
+  min-width: 0;
+}
+
+.hearts-seat-acting {
+  border-color: rgba(255, 213, 128, 0.75);
+  background: rgba(255, 213, 128, 0.12);
+}
+
+/* Lowest score wins, so the highlight goes to the SMALLEST total. Every other
+   game in this app highlights the biggest number; this one inverts. */
+.hearts-seat-leader .hearts-total {
+  color: #7ee787;
+}
+
+.hearts-plate {
+  width: 132px;
+  flex: none;
+  min-width: 0;
+}
+
+.hearts-plate .seat-name {
+  max-width: 100%;
+}
+
+/* A long model id wrapped to two lines and made one strip taller than the rest,
+   so the four seats no longer lined up. Truncate instead — the full id is in
+   the sidebar. */
+.hearts-plate .seat-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hearts-scores {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 1px;
+}
+
+.hearts-total {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.hearts-hand-score {
+  font-size: 11px;
+  color: #ff9aa2;
+  font-weight: 600;
+}
+
+.hearts-moon {
+  font-size: 11px;
+  color: #ffd580;
+}
+
+.hearts-plate-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.hearts-lead-chip {
+  background: rgba(126, 231, 135, 0.16);
+  color: #7ee787;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-weight: 700;
+}
+
+.hearts-hand {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.hearts-empty-hand {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* Thirteen cards will not fit side by side, so they overlap. */
+.card-fan {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.card-fan .card + .card {
+  margin-left: -18px;
+}
+
+.hearts-centre {
+  width: 186px;
+  flex: none;
+  /* Without this the panel stretches to the full height of the row and reads as
+     a large empty box with two cards adrift in it. */
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 8px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+}
+
+.hearts-trick-head {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.hearts-trick {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  min-height: 62px;
+  align-items: center;
+}
+
+.hearts-trick-play {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.hearts-trick-who {
+  font-size: 9px;
+  color: var(--text-dim);
+  max-width: 44px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hearts-trick-winner .card {
+  box-shadow: 0 0 0 2px #7ee787, 0 3px 7px rgba(0, 0, 0, 0.5);
+}
+
+.hearts-trick-empty {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.hearts-trick-result {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7ee787;
+}
+
+.hearts-flags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.hearts-flag {
+  font-size: 9.5px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.hearts-flag.on {
+  background: rgba(255, 154, 162, 0.16);
+  color: #ff9aa2;
+}
+
+.hearts-summary {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+
 /* ------------------------------------------------------------------ poker */
 
 .felt-poker {
@@ -1151,13 +1390,6 @@ button:disabled {
  */
 .seat-plate .seat-name {
   min-width: 0;
-}
-
-.seat-plate .seat-name-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .seat-acting .seat-plate {
