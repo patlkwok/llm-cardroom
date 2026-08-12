@@ -23,7 +23,7 @@ whichever platform you are on:
 | --- | --- |
 | Windows | `LLM-Cardroom-<version>-x64.exe` (NSIS installer), `-portable.exe` |
 | macOS | `LLM-Cardroom-<version>-mac-<arm64\|x64>.dmg` and `.zip` |
-| Linux | `LLM-Cardroom-<version>-linux-x64.AppImage` and `.deb` |
+| Linux | `LLM-Cardroom-<version>-linux-x86_64.AppImage` and `-linux-amd64.deb` |
 
 `npm run dist:dir` builds an unpacked folder instead, which is quicker when you
 only want to smoke-test the packaged app.
@@ -206,7 +206,7 @@ seven-card hand evaluation with proper kicker comparison.
 npm test
 ```
 
-98 tests covering hand evaluation, betting order, side pots, chip conservation
+102 tests covering hand evaluation, betting order, side pots, chip conservation
 across randomised hands (including players who fold when checking was free) and
 repeated roster churn, undersized all-in raises, short blinds, blackjack settlement,
 insurance payouts, bankroll accounting, stake changes landing on the right

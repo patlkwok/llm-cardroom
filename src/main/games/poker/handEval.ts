@@ -40,6 +40,11 @@ const PLURAL: Record<number, string> = {
   8: 'eights', 9: 'nines', 10: 'tens', 11: 'jacks', 12: 'queens', 13: 'kings', 14: 'aces'
 }
 
+const SINGULAR: Record<number, string> = {
+  2: 'two', 3: 'three', 4: 'four', 5: 'five', 6: 'six', 7: 'seven',
+  8: 'eight', 9: 'nine', 10: 'ten', 11: 'jack', 12: 'queen', 13: 'king', 14: 'ace'
+}
+
 function encode(category: HandCategory, tiebreakers: number[]): number {
   // Five slots of base 15 leave room for every rank 2..14.
   let value = category
@@ -153,25 +158,37 @@ function describe(
   const r = (n: number): string => rankLabel(n as Rank)
   const p = (n: number): string => PLURAL[n]
 
+  /**
+   * Naming only the paired ranks made two hands that differ solely by kicker
+   * print identically, so a correct showdown read as a mishandled tie. Anything
+   * the label leaves out is a rank that can decide the pot.
+   */
+  const kicker = (rank: number | undefined): string =>
+    rank === undefined ? '' : `, ${SINGULAR[rank]} kicker`
+
+  /** Every rank in the hand, high to low — for the two categories where all five count. */
+  const allRanks = (): string => cards.map((card) => r(card.rank)).join(' ')
+
   switch (category) {
     case HandCategory.StraightFlush:
       return high === 14 ? 'Royal flush' : `${name}, ${r(high as number)} high`
     case HandCategory.Quads:
-      return `${name}, ${p(byGroup[0])}`
+      return `${name}, ${p(byGroup[0])}${kicker(byGroup[1])}`
     case HandCategory.FullHouse:
+      // Trips plus pair fully determine a full house; nothing is left out.
       return `${name}, ${p(byGroup[0])} full of ${p(byGroup[1])}`
     case HandCategory.Flush:
-      return `${name}, ${r(cards[0].rank)} high`
+      return `${name}, ${r(cards[0].rank)} high (${allRanks()})`
     case HandCategory.Straight:
       return `${name}, ${r(high as number)} high`
     case HandCategory.Trips:
-      return `${name}, ${p(byGroup[0])}`
+      return `${name}, ${p(byGroup[0])}${kicker(byGroup[1])}`
     case HandCategory.TwoPair:
-      return `${name}, ${p(byGroup[0])} and ${p(byGroup[1])}`
+      return `${name}, ${p(byGroup[0])} and ${p(byGroup[1])}${kicker(byGroup[2])}`
     case HandCategory.Pair:
-      return `${name} of ${p(byGroup[0])}`
+      return `${name} of ${p(byGroup[0])}${kicker(byGroup[1])}`
     default:
-      return `${name}, ${r(cards[0].rank)} high`
+      return `${name}, ${r(cards[0].rank)} high (${allRanks()})`
   }
 }
 

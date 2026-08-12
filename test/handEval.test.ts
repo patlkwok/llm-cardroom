@@ -108,3 +108,41 @@ test('quads with the best kicker from seven', () => {
   assert.equal(r.category, HandCategory.Quads)
   assert.equal(r.cards[4].rank, 14)
 })
+
+/* --------------------------------------------------- labels name the kicker */
+
+test('hands that differ only by kicker do not print the same label', () => {
+  // The showdown that prompted this: board 6d Ks Qc Qs 5s. Both players make
+  // queens and fives off the board, and only the fifth card separates them.
+  const withAce = evaluateBest(hand('6d Ks Qc Qs 5s As 5d'))
+  const withKing = evaluateBest(hand('6d Ks Qc Qs 5s 2c 5h'))
+
+  assert.ok(withAce.value > withKing.value, 'the ace kicker wins')
+  assert.notEqual(withAce.label, withKing.label, 'a decisive kicker must be visible in the label')
+  assert.match(withAce.label, /ace kicker/)
+  assert.match(withKing.label, /king kicker/)
+})
+
+test('every category names whatever decides it', () => {
+  const cases: Array<[string, RegExp]> = [
+    ['As Ah Ad Ac Kd', /four of a kind, aces, king kicker/i],
+    ['As Ah Ad Kc Qd', /three of a kind, aces, king kicker/i],
+    ['As Ah Kd Kc Qd', /two pair, aces and kings, queen kicker/i],
+    ['As Ah Kd Qc Jd', /pair of aces, king kicker/i],
+    ['As Ks 9s 8s 5s', /flush, a high \(A K 9 8 5\)/i],
+    ['As Kh 9d 8c 5s', /high card, a high \(A K 9 8 5\)/i],
+    // Fully determined by what is already printed.
+    ['As Ah Ad Kc Kd', /full house, aces full of kings/i],
+    ['9s 8h 7d 6c 5s', /straight, 9 high/i]
+  ]
+  for (const [text, pattern] of cases) {
+    assert.match(evaluate5(hand(text)).label, pattern)
+  }
+})
+
+test('two pair with an identical kicker still reads as a tie', () => {
+  const a = evaluate5(hand('As Ah Kd Kc Qd'))
+  const b = evaluate5(hand('Ac Ad Kh Ks Qc'))
+  assert.equal(a.value, b.value, 'genuinely equal hands stay equal')
+  assert.equal(a.label, b.label, 'and still print the same')
+})

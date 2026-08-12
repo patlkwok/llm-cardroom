@@ -591,6 +591,9 @@ export class MatchRunner {
     this.log('system', `${players.length} models sit down with ${rules.startingStack} chips each. Blinds ${rules.smallBlind}/${rules.bigBlind}.`)
     this.pushSnapshot()
 
+    /** Seats already announced as out, so each is reported exactly once. */
+    const eliminated = new Set<string>()
+
     while (!this.isStopping && !table.isMatchOver) {
       const maxHands = this.live.maxRounds
       if (maxHands > 0 && table.state.handsPlayed >= maxHands) break
@@ -648,8 +651,12 @@ export class MatchRunner {
               award.seatId
             )
           }
+          // Announce the transition, not the state: this runs after every
+          // payout, so without the guard each already-busted seat was
+          // re-eliminated in the log once per hand for the rest of the match.
           for (const seat of table.state.seats) {
-            if (seat.busted && seat.stack === 0) {
+            if (seat.busted && seat.stack === 0 && !eliminated.has(seat.id)) {
+              eliminated.add(seat.id)
               this.log('result', `${seat.name} is eliminated.`, seat.id)
             }
           }

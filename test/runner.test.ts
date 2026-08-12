@@ -937,3 +937,40 @@ test('poker refuses to start with fewer than two models', async () => {
   assert.equal(final.snapshot.status, 'error')
   assert.match(final.snapshot.errorText ?? '', /at least 2 models/)
 })
+
+test('an eliminated player is announced once, not every later hand', async () => {
+  const sink = capture()
+  // Everyone shoves, so stacks collapse fast and someone busts with plenty of
+  // hands still to come — which is when the repeated announcement showed up.
+  mockOpenRouter((prompt) => {
+    const line = prompt.split('\n').find((l) => l.startsWith('Legal actions:')) ?? ''
+    const shove = line.match(/raise to (?:any amount from \d+ to )?(\d+)/)
+    if (shove) {
+      return JSON.stringify({ reasoning: 'Shoving.', action: 'raise', amount: Number(shove[1]) })
+    }
+    if (line.includes('call')) return JSON.stringify({ reasoning: 'Calling it off.', action: 'call' })
+    if (line.includes('check')) return JSON.stringify({ reasoning: 'Checking.', action: 'check' })
+    return JSON.stringify({ reasoning: 'Folding.', action: 'fold' })
+  }, sink)
+
+  const base = defaultSettings()
+  const settings = pokerSettings(3, {
+    maxRounds: 30,
+    poker: { ...base.poker, startingStack: 200, smallBlind: 5, bigBlind: 10 }
+  })
+  const runner = new MatchRunner(settings, 'test-key', sink.emit)
+  await runner.run()
+
+  const eliminations = sink.events
+    .filter((e) => e.type === 'log')
+    .map((e) => (e as { entry: { text: string } }).entry.text)
+    .filter((text) => text.includes('is eliminated.'))
+
+  assert.ok(eliminations.length > 0, 'the scenario should eliminate someone')
+
+  const counts = new Map<string, number>()
+  for (const text of eliminations) counts.set(text, (counts.get(text) ?? 0) + 1)
+  for (const [text, n] of counts) {
+    assert.equal(n, 1, `"${text}" was logged ${n} times`)
+  }
+})

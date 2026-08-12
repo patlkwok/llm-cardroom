@@ -142,9 +142,14 @@ async function main() {
     await win.click('.segmented button:has-text("Hold\'em")')
     for (let i = 0; i < 4; i++) await seatModel(win, i)
 
+    // Slow the table so the showdown frame lingers long enough to catch. It is
+    // the most informative state — the only one showing hand labels and the
+    // pot award — so the capture waits for it rather than for a fixed delay.
+    await win.fill('input[type="range"]', '900')
+
     await win.click('.start-button')
     await waitForCounter(win, /Hand [1-9]/)
-    await win.waitForTimeout(6000)
+    await win.waitForSelector('.seat-showdown', { timeout: 120000 })
     await shoot(win, '03-poker-table.png')
     await stopMatch(win)
 
