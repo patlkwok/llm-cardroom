@@ -14,7 +14,12 @@ export class OpenRouterError extends Error {
      * call too — a rejected key, exhausted credits, a forbidden model. These
      * stop the match rather than quietly falling back on every decision.
      */
-    readonly fatal = false
+    readonly fatal = false,
+    /**
+     * The reply was cut off at `max_tokens`. Retrying the same request is
+     * futile — the only thing that helps is a bigger budget.
+     */
+    readonly truncated = false
   ) {
     super(message)
     this.name = 'OpenRouterError'
@@ -108,19 +113,40 @@ export interface ChatRequest {
 /**
  * Reasoning tokens count against max_tokens, so a thinking model needs far more
  * headroom than a plain one or it burns the whole budget before answering.
+ *
+ * **`max_tokens` is a ceiling, not a purchase.** Billing is on tokens actually
+ * produced, so a generous cap costs nothing for a model that answers concisely —
+ * it only changes the outcome for one that would otherwise be cut off mid-
+ * thought, and those calls are billed in full today while returning nothing at
+ * all. The old `default` of 900 was set when few models reasoned unprompted;
+ * it now truncates most frontier models on any question worth asking, which is
+ * exactly what it was meant to prevent.
  */
 const TOKEN_BUDGET: Record<ReasoningEffort, number> = {
-  default: 900,
-  none: 900,
-  low: 3000,
-  medium: 6000,
-  high: 12000
+  default: 4000,
+  none: 1200,
+  low: 6000,
+  medium: 12000,
+  high: 24000
+}
+
+/** The ceiling for a retry after a reply was cut off. */
+export const MAX_TOKEN_CEILING = 32000
+
+export function tokenBudget(effort: ReasoningEffort): number {
+  return TOKEN_BUDGET[effort] ?? TOKEN_BUDGET.default
 }
 
 export interface ChatResult {
   text: string
   /** Some models expose a separate reasoning channel; kept for the UI. */
   reasoning: string
+  /**
+   * True when the model was cut off at `max_tokens` rather than finishing. It
+   * has not failed to follow the format — it never reached the answer — so the
+   * only useful response is more headroom, not a correction.
+   */
+  truncated: boolean
   promptTokens: number
   completionTokens: number
   costUsd: number
@@ -129,7 +155,7 @@ export interface ChatResult {
 export async function chatCompletion(request: ChatRequest): Promise<ChatResult> {
   const {
     apiKey, model, messages, reasoningEffort,
-    maxTokens = TOKEN_BUDGET[reasoningEffort] ?? 900,
+    maxTokens = tokenBudget(reasoningEffort),
     timeoutMs = 180_000, signal
   } = request
 
@@ -174,7 +200,12 @@ export async function chatCompletion(request: ChatRequest): Promise<ChatResult> 
     }
 
     const body = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string; reasoning?: string }; error?: unknown }>
+      choices?: Array<{
+        message?: { content?: string; reasoning?: string }
+        finish_reason?: string
+        native_finish_reason?: string
+        error?: unknown
+      }>
       usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number }
       error?: { message?: string }
     }
@@ -183,13 +214,28 @@ export async function chatCompletion(request: ChatRequest): Promise<ChatResult> 
 
     const choice = body.choices?.[0]
     const text = choice?.message?.content ?? ''
+    const finish = choice?.finish_reason ?? choice?.native_finish_reason ?? ''
+    const truncated = finish === 'length' || finish === 'MAX_TOKENS'
+
     if (!text.trim() && !choice?.message?.reasoning) {
-      throw new OpenRouterError('The model returned an empty response.', undefined, true)
+      // Naming the cause matters: retrying an identical request after a
+      // truncation just burns the budget again, which is what turned one
+      // over-long reply into three of them.
+      throw new OpenRouterError(
+        truncated
+          ? `The model used its whole ${maxTokens}-token budget thinking and never answered.`
+          : 'The model returned an empty response.',
+        undefined,
+        true,
+        false,
+        truncated
+      )
     }
 
     return {
       text,
       reasoning: choice?.message?.reasoning ?? '',
+      truncated,
       promptTokens: body.usage?.prompt_tokens ?? 0,
       completionTokens: body.usage?.completion_tokens ?? 0,
       costUsd: body.usage?.cost ?? 0

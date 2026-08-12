@@ -71,6 +71,9 @@ function playHand(
     if (table.trickComplete) {
       const trick = table.resolveTrick()
       gathered.push(...trick.plays.map((p) => p.card))
+      // Resolving no longer opens the next trick — the runner shows the result
+      // for a beat first — so a test driving the engine has to advance it.
+      if (table.awaitingNextTrick) table.startNextTrick()
     }
   }
   return gathered
@@ -484,7 +487,10 @@ test('forced plays are common enough to be worth skipping the model call for', (
       total++
       if (legal.length === 1) forced++
       table.playCard(seat.seatIndex, legal[Math.floor(Math.random() * legal.length)])
-      if (table.trickComplete) table.resolveTrick()
+      if (table.trickComplete) {
+        table.resolveTrick()
+        if (table.awaitingNextTrick) table.startNextTrick()
+      }
     }
     table.scoreHand()
   }

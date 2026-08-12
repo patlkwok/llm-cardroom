@@ -24,15 +24,22 @@ export function twentyFourSystemPrompt(_rules: TwentyFourRules): string {
     '- Intermediate results may be fractions or negative; only the final value must be 24.',
     '',
     '**Not every deal can be made into 24.** Unsolvable hands are dealt on purpose.',
-    'If there is genuinely no way, answer with "none" — that is a correct answer and scores.',
+    'If there is genuinely no way, say so — that is a correct answer and it scores.',
     'Guessing an expression that does not actually evaluate to 24 scores nothing, so check',
     'your arithmetic before answering rather than submitting something that looks close.',
     '',
-    'Reply with a single JSON object and nothing else, in exactly this shape:',
-    '{"reasoning": "<one short sentence>", "expression": "<your expression, or \\"none\\">"}',
+    'HOW TO ANSWER',
+    'Reply with the expression on its own, and nothing else at all:',
     '',
-    'Examples of the shape: {"reasoning": "6 times 4.", "expression": "(6 * 4) * (3 - 2)"}',
-    'or {"reasoning": "No combination reaches 24.", "expression": "none"}'
+    '    (6 * 4) * (3 - 2)',
+    '',
+    'If the deal cannot be made into 24, reply with exactly:',
+    '',
+    '    no solution',
+    '',
+    'No JSON, no explanation, no "The answer is", no trailing "= 24". Just the',
+    'expression itself, or the words "no solution". Think first if you need to,',
+    'but make sure the very last line of your reply is the answer and nothing else.'
   ].join('\n')
 }
 
@@ -67,7 +74,7 @@ export function buildTwentyFourPrompt(
   lines.push('Everyone is answering right now, so the fastest correct answer takes the round.')
   lines.push('An answer that does not evaluate to 24 scores nothing at all.')
   lines.push('')
-  lines.push('What is your expression?')
+  lines.push('What is your expression? Reply with just the expression, or "no solution".')
 
   // Note what is deliberately absent: `state.solution` and `state.solvable`.
   // Both are spectator-only, exactly like poker equity.
@@ -81,47 +88,90 @@ const NO_SOLUTION = [
 ]
 
 /**
+ * Strips the decoration models put around an answer they were asked for bare.
+ *
+ * **Never strip a bare `*`.** It is a markdown emphasis marker *and* the
+ * multiplication operator, and a blanket `[`*_]` strip silently turned
+ * `(6*4)*(3-2)` into `(64)(3-2)` — a valid-looking answer that is not the one
+ * the model gave. Only paired markers wrapping the whole line come off.
+ */
+function cleanAnswer(raw: string): string {
+  let out = raw.trim()
+  out = out.replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/, '')
+  out = out.replace(/`/g, '')
+  // Paired emphasis around the entire line only, longest marker first.
+  for (const marker of ['***', '**', '_']) {
+    if (out.length > marker.length * 2 && out.startsWith(marker) && out.endsWith(marker)) {
+      out = out.slice(marker.length, -marker.length).trim()
+    }
+  }
+  // "The answer is: ...", "Answer — ...", "Expression: ..."
+  out = out.replace(/^(the\s+)?(answer|expression|solution|result)\s*(is)?\s*[:\-—]?\s*/i, '')
+  // A trailing "= 24" is extremely common despite being asked not to.
+  out = out.replace(/\s*=\s*24\s*\.?\s*$/, '')
+  return out.replace(/\.$/, '').trim()
+}
+
+/**
  * Reads an expression, or a claim that the deal has none.
  *
- * `null` is a real answer here rather than a parse failure, so it is returned as
- * a value: grading it against the solver is what catches a model that says "no
- * solution" to a deal that plainly has one.
+ * The contract asked for is a **bare expression** — no JSON envelope. That is
+ * deliberate: the envelope is more to get wrong, more tokens to emit, and it
+ * bought nothing that the reasoning channel does not already provide. JSON is
+ * still accepted, because a model that volunteers `{"reasoning": …}` should not
+ * be punished for being more helpful than asked.
+ *
+ * `null` is a real answer rather than a parse failure, so it comes back as a
+ * value: grading it against the solver is what catches a model claiming "no
+ * solution" for a deal that plainly has one.
  */
 export function parseTwentyFourReply(text: string): ParseOutcome<string | null> {
+  if (!text.trim()) {
+    return { ok: false, reasoning: '', problem: 'You replied with nothing at all.' }
+  }
+
+  // A model that volunteered JSON is taken at its word, reasoning and all.
   const obj = extractJson(text)
-  if (!obj) return notJson()
-  const reasoning = readReasoning(obj)
+  if (obj) {
+    const reasoning = readReasoning(obj)
+    const raw = obj.expression ?? obj.answer ?? obj.solution ?? obj.equation ?? obj.result
+    if (raw === null) return { ok: true, value: null, reasoning }
+    if (typeof raw === 'string' && raw.trim()) {
+      return { ok: true, value: readAnswer(cleanAnswer(raw)), reasoning }
+    }
+    // JSON with no answer in it falls through to the plain-text reader below,
+    // rather than being rejected outright.
+  }
 
-  const raw = obj.expression ?? obj.answer ?? obj.solution ?? obj.equation ?? obj.result
-  if (raw === null) return { ok: true, value: null, reasoning }
-  if (typeof raw !== 'string') {
-    return {
-      ok: false,
-      reasoning,
-      problem: 'Your JSON needs an "expression" string, or "none" if there is no solution.'
+  // The asked-for shape: the answer, on its own. Models reason first anyway, so
+  // read from the bottom — the instruction is that the LAST line is the answer.
+  const lines = text
+    .split('\n')
+    .map((line) => cleanAnswer(line))
+    .filter((line) => line.length > 0)
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    const word = line.toLowerCase().replace(/[^a-z]/g, '')
+    if (NO_SOLUTION.includes(word)) return { ok: true, value: null, reasoning: '' }
+    // Anything made only of digits, operators and brackets is an answer. This
+    // is a shape test, not a correctness test — see below.
+    if (/^[0-9+\-*/×÷·−–()[\]\s]+$/.test(line) && /[0-9]/.test(line)) {
+      return { ok: true, value: line, reasoning: '' }
     }
   }
 
-  const trimmed = raw.trim()
-  if (!trimmed) {
-    return {
-      ok: false,
-      reasoning,
-      problem: 'Your "expression" was empty. Give an expression, or "none".'
-    }
+  return {
+    ok: false,
+    reasoning: '',
+    problem:
+      'I could not find an answer in that. Reply with only the expression, ' +
+      'for example "(6 * 4) * (3 - 2)", or exactly "no solution".'
   }
+}
 
-  const word = trimmed.toLowerCase().replace(/[^a-z]/g, '')
-  if (NO_SOLUTION.includes(word)) return { ok: true, value: null, reasoning }
-
-  // Models often answer "(6*4)*(3-2) = 24"; keep only the expression itself.
-  const withoutTarget = trimmed.replace(/\s*=\s*24\s*$/, '').trim()
-
-  // Any well-formed reply is accepted here, even an expression that is wrong or
-  // does not parse. Grading belongs to the engine, not to this parser, and that
-  // is a deliberate split: `agent.ts` retries whatever a parser rejects, so
-  // rejecting bad arithmetic would hand one model three attempts at the puzzle
-  // while another got one. Catching an expression that does not evaluate is the
-  // point of the game, not an error to be corrected out of the model.
-  return { ok: true, value: withoutTarget || trimmed, reasoning }
+/** "none" and friends mean the deal cannot be done; anything else is an answer. */
+function readAnswer(cleaned: string): string | null {
+  const word = cleaned.toLowerCase().replace(/[^a-z]/g, '')
+  return NO_SOLUTION.includes(word) ? null : cleaned
 }

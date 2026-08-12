@@ -314,7 +314,7 @@ export class MatchRunner {
    * wired up. Every call site used to repeat all three.
    */
   private async ask<T>(request: AskRequest<T>): Promise<AgentResult<T>> {
-    const { player, prompt, parse, fallback, failFast = true } = request
+    const { player, prompt, parse, fallback, maxTokens, failFast = true } = request
 
     this.emit({ type: 'thinking', playerId: player.id, playerName: player.name, active: true })
     try {
@@ -324,6 +324,7 @@ export class MatchRunner {
         prompt,
         parse,
         fallback,
+        maxTokens,
         signal: this.abort.signal,
         onAttemptFailed: (attempt, problem) =>
           this.log('error', `${player.name} attempt ${attempt} rejected: ${problem}`, player.id)

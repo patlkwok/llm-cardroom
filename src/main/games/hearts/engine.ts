@@ -344,8 +344,13 @@ export class HeartsTable {
   }
 
   /**
-   * Awards the trick to the highest card of the led suit and opens the next, or
-   * ends the hand after the thirteenth.
+   * Awards the trick to the highest card of the led suit, and stops there.
+   *
+   * Deliberately does *not* open the next trick. The four cards and the name of
+   * whoever took them are the most informative moment in a hand, and opening
+   * the next trick in the same call cleared them from the felt in the same
+   * frame — the operator never saw who won anything. `startNextTrick` is a
+   * separate step so the runner can hold the result on screen for a beat.
    */
   resolveTrick(): HeartsTrick {
     const s = this.state
@@ -364,14 +369,23 @@ export class HeartsTable {
 
     s.lastTrick = trick
     s.currentTrick = null
-
-    if (s.trickNumber >= CARDS_PER_HAND) {
-      s.phase = 'handComplete'
-      s.actingSeatIndex = -1
-    } else {
-      this.openTrick(best.seatIndex)
-    }
+    s.actingSeatIndex = -1
+    if (s.trickNumber >= CARDS_PER_HAND) s.phase = 'handComplete'
     return trick
+  }
+
+  /** True between a resolved trick and the next one being dealt out. */
+  get awaitingNextTrick(): boolean {
+    return this.state.phase === 'playing' && this.state.currentTrick === null
+  }
+
+  /** Opens the next trick, led by whoever took the last one. */
+  startNextTrick(): void {
+    const s = this.state
+    if (!this.awaitingNextTrick) throw new Error('a trick is already in progress')
+    const leader = s.lastTrick?.winnerSeatIndex
+    if (leader === undefined) throw new Error('no previous trick to lead from')
+    this.openTrick(leader)
   }
 
   get handComplete(): boolean {

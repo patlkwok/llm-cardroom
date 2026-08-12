@@ -84,8 +84,16 @@ at its own default.
 
 Higher effort costs more and takes longer per decision. Because reasoning
 tokens count against the response budget, the app raises `max_tokens` with the
-effort level (900 → 12,000) so a thinking model cannot exhaust its budget
-before it answers.
+effort level (4,000 → 24,000) so a thinking model cannot exhaust its budget
+before it answers, and the 24 puzzle — an open search rather than a choice
+between named actions — starts higher still.
+
+If a model is cut off mid-thought anyway, the app notices (`finish_reason:
+"length"`), says so plainly, and **retries with a larger budget** rather than
+telling the model to fix its formatting. It had not failed to format an answer;
+it never reached one. A generous ceiling costs nothing extra, since billing is
+on tokens actually produced — but a truncated reply is billed in full and
+returns nothing at all.
 
 Each game keeps its own roster, so switching between games does not lose the
 other tables' line-ups within a session.
@@ -176,21 +184,44 @@ minimum so the session survives.
 Each decision is a single chat completion. The model gets a system prompt with
 the rules in force and a user prompt with the exact game state — its cards, the
 board, stacks, pot, betting history this hand and the legal actions with their
-amounts. It must answer with one JSON object:
+amounts. For the games where the answer is a choice between named things, it
+replies with one JSON object:
 
 ```json
 { "reasoning": "Pot odds justify a call here.", "action": "call" }
 ```
 
-Raises carry an `amount`, which is the total the bet is raised *to*.
+Raises carry an `amount`, the total the bet is raised *to*. Blackjack uses
+`action`, hearts uses `card` for a play and a three-element `pass` array for the
+exchange — the only decision in the app that returns a set.
 
-Replies are parsed leniently: fenced code blocks, surrounding prose and common
-synonyms (`hit me`, `shove`, `all-in`, `raise_to`) are all accepted. If a reply
-is unusable or illegal, the model is told exactly what was wrong and asked
-again, up to three attempts. If it still fails, the table falls back to a safe
-action — stand at blackjack, check-or-fold at poker — records the reason on the
-decision card, and play continues. **A badly behaved model never stalls the
-table.**
+**The 24 puzzle asks for plain text instead**, because its answer is not a
+choice from a list:
+
+```
+(6 * 4) * (3 - 2)
+```
+
+or exactly `no solution`. The JSON envelope bought nothing there — the app
+already reads a model's thinking from the reasoning channel — while adding
+tokens to emit and syntax to get wrong. JSON is still accepted from a model that
+volunteers it.
+
+Replies are parsed leniently: fenced code blocks, surrounding prose, `Answer:`
+prefixes, a trailing `= 24`, unicode `×` and `÷`, and common synonyms (`hit me`,
+`shove`, `all-in`, `raise_to`) are all accepted. A 24 answer is read from the
+*last* line, since models reason first.
+
+If a reply is unusable or illegal, the model is told exactly what was wrong and
+asked again, up to three attempts. If it still fails, the table falls back to a
+safe action — stand at blackjack, check-or-fold at poker, the first legal card
+at hearts — records the reason on the decision card, and play continues. **A
+badly behaved model never stalls the table.**
+
+One case is deliberately *not* treated as a bad reply: an answer that is
+well-formed but wrong. At the 24 puzzle a wrong expression is graded, not
+corrected, because retrying it would hand one model three attempts at the puzzle
+while another got one.
 
 Account-level failures are treated differently. A rejected key (401), exhausted
 credits (402) or a forbidden model (403) will fail identically on every
@@ -256,7 +287,7 @@ rate** and **median time**.
 npm test
 ```
 
-190 tests. The load-bearing ones are invariants rather than examples: chip
+197 tests. The load-bearing ones are invariants rather than examples: chip
 conservation across randomised poker hands and repeated roster churn, per-seat
 bankroll accounting at blackjack, card conservation on the shoe, 52 cards and
 exactly 26 points conserved through every hearts hand, and exact-rational

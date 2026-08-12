@@ -1,4 +1,10 @@
-import { chatCompletion, OpenRouterError, type ChatMessage } from '../openrouter.ts'
+import {
+  chatCompletion,
+  MAX_TOKEN_CEILING,
+  OpenRouterError,
+  tokenBudget,
+  type ChatMessage
+} from '../openrouter.ts'
 import type { PlayerConfig } from '../../shared/types.ts'
 import type { ParseOutcome, Prompt } from './prompts/shared.ts'
 
@@ -36,8 +42,16 @@ export interface DecisionRequest<T> {
   fallback: T
   signal?: AbortSignal
   maxAttempts?: number
+  /**
+   * Starting token budget. Defaults to the player's reasoning effort; a game
+   * that asks a genuinely harder question can start higher.
+   */
+  maxTokens?: number
   onAttemptFailed?: (attempt: number, problem: string) => void
 }
+
+/** How much more headroom a retry gets after a reply was cut off. */
+const TRUNCATION_GROWTH = 2.5
 
 /**
  * Asks a model for one decision, correcting it in-conversation when the reply
@@ -60,12 +74,21 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
   let fatalReason: string | undefined
 
   let finalAttemptMs = 0
+  let budget = request.maxTokens ?? tokenBudget(player.reasoningEffort)
+
+  /** More headroom for the next attempt, or null once there is no more to give. */
+  const grow = (): number | null => {
+    if (budget >= MAX_TOKEN_CEILING) return null
+    budget = Math.min(Math.round(budget * TRUNCATION_GROWTH), MAX_TOKEN_CEILING)
+    return budget
+  }
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (signal?.aborted) break
 
     let text: string
     let reasoningChannel = ''
+    let truncated = false
     const attemptStarted = Date.now()
     try {
       const result = await chatCompletion({
@@ -73,10 +96,12 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
         model: player.modelId,
         messages,
         reasoningEffort: player.reasoningEffort,
+        maxTokens: budget,
         signal
       })
       text = result.text
       reasoningChannel = result.reasoning
+      truncated = result.truncated
       promptTokens += result.promptTokens
       completionTokens += result.completionTokens
       costUsd += result.costUsd
@@ -92,6 +117,18 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
         break
       }
       request.onAttemptFailed?.(attempt, err.message)
+
+      // A reply cut off at the token ceiling is not a formatting mistake, and
+      // asking again for the same thing under the same cap just spends the
+      // budget a second time. Give it room instead.
+      if (err instanceof OpenRouterError && err.truncated && attempt < maxAttempts) {
+        const grown = grow()
+        if (grown !== null) {
+          request.onAttemptFailed?.(attempt, `Retrying with a ${grown}-token budget.`)
+          continue
+        }
+      }
+
       // Only network-ish failures are worth another try; a bad model id is not.
       if (!(err instanceof OpenRouterError) || !err.retryable || attempt === maxAttempts) break
       await sleep(600 * attempt)
@@ -115,14 +152,31 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
       }
     }
 
+    // A truncated reply that will not parse is the same problem as an empty
+    // one: the model ran out of room mid-thought and never reached its answer.
+    // Correcting its formatting is the wrong feedback — it did not get far
+    // enough to have any — and it wastes the remaining attempts.
+    if (truncated && attempt < maxAttempts) {
+      const grown = grow()
+      if (grown !== null) {
+        lastProblem = `Cut off after ${budget} tokens before answering.`
+        request.onAttemptFailed?.(attempt, `${lastProblem} Retrying with a ${grown}-token budget.`)
+        continue
+      }
+    }
+
     lastProblem = outcome.problem ?? 'Unusable reply.'
     request.onAttemptFailed?.(attempt, lastProblem)
 
     if (attempt < maxAttempts) {
       messages.push({ role: 'assistant', content: text.slice(0, 2000) })
+      // Deliberately does not name a format: the games disagree about what a
+      // reply looks like (JSON for most, a bare expression for the 24 puzzle),
+      // and the parser's own `problem` already says what was wrong with this
+      // particular one.
       messages.push({
         role: 'user',
-        content: `${lastProblem}\n\nReply again with only the JSON object, nothing else.`
+        content: `${lastProblem}\n\nTry again, and reply with the answer only, in the format you were asked for.`
       })
     }
   }

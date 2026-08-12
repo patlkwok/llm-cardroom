@@ -73,6 +73,8 @@ function installOpenRouterMock() {
       // with an `action` fails parsing three times and lands on a fallback,
       // which then shows up in the screenshots as if the app had misbehaved.
       let answer = { action: globalThis.__mockAction }
+      /** Set instead of `answer` by games whose reply is plain text, not JSON. */
+      let rawAnswer = null
       if (body.includes('Do you take insurance?')) {
         answer = { insurance: false }
       } else if (body.includes('Which 3 cards do you pass?')) {
@@ -128,9 +130,11 @@ function installOpenRouterMock() {
         }
         const solution = values.length === 4 ? solveFor(values.map((v) => ({ v, t: String(v) }))) : null
         globalThis.__mock24Seat = ((globalThis.__mock24Seat || 0) + 1) % 4
-        answer = globalThis.__mock24Seat === 0
-          ? { expression: values.join(' + ') }
-          : { expression: solution || 'none' }
+        // The 24 puzzle asks for a BARE expression, not JSON, so the mock
+        // answers the way a real model now will. Reasoning comes back on the
+        // separate channel, which is where a thinking model puts it.
+        rawAnswer =
+          globalThis.__mock24Seat === 0 ? values.join(' + ') : solution || 'no solution'
       } else if (globalThis.__mockPrefer) {
         // Take the first preferred action the prompt actually offers, so a
         // capture can steer the table towards a state — a split, say — without
@@ -140,14 +144,24 @@ function installOpenRouterMock() {
         if (choice) answer = { action: choice }
       }
 
-      const reply = JSON.stringify({
-        reasoning:
-          'Canned reply from the screenshot harness — enough to keep the table ' +
-          'moving so the layout can be photographed.',
-        ...answer
-      })
+      const blurb =
+        'Canned reply from the screenshot harness — enough to keep the table ' +
+        'moving so the layout can be photographed.'
+      const reply = rawAnswer === null ? JSON.stringify({ reasoning: blurb, ...answer }) : rawAnswer
+
       return json({
-        choices: [{ message: { content: reply } }],
+        choices: [
+          {
+            message: {
+              content: reply,
+              // A plain-text answer carries no reasoning field, so it arrives on
+              // the reasoning channel instead — exactly as a thinking model's
+              // does. Without this the feed would read "(no reasoning given)".
+              ...(rawAnswer === null ? {} : { reasoning: blurb })
+            },
+            finish_reason: 'stop'
+          }
+        ],
         usage: { prompt_tokens: 640, completion_tokens: 48, cost: 0.0021 }
       })
     }
@@ -267,7 +281,13 @@ async function main() {
       () => {
         const played = document.querySelectorAll('.hearts-trick-play').length
         const fan = document.querySelector('.card-fan')
-        return played >= 3 && (fan ? fan.children.length : 0) >= 6
+        const held = fan ? fan.children.length : 0
+        // A *completed* trick, still on the felt with its winner named — the
+        // state a trick result now holds for a full step, and the one worth
+        // photographing. Held cards are required too, so the capture lands
+        // mid-hand where the thirteen-card fans are still on screen: waiting
+        // for the result alone caught trick 13 of 13, where every hand is empty.
+        return played === 4 && document.querySelector('.hearts-trick-result') && held >= 5
       },
       null,
       { timeout: 120000 }

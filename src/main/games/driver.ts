@@ -73,6 +73,11 @@ export interface AskRequest<T> {
   /** Used when every attempt fails, so the table can always keep moving. */
   fallback: T
   /**
+   * Starting token budget, when this game's question is harder than a choice
+   * between four named actions and deserves more thinking room up front.
+   */
+  maxTokens?: number
+  /**
    * Whether an account error (401/402/403) should throw straight out of `ask`.
    * True everywhere except a simultaneous round, where a throw would be
    * swallowed by `Promise.allSettled` — there the caller scans the results for

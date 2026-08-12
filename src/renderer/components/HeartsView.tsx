@@ -59,24 +59,27 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
 
   return (
     <div className="felt felt-hearts">
-      {/* No felt watermark here. The seat strips fill the whole felt, and the
-          strips are translucent, so the brand text showed straight through the
-          middle of four hands of cards. Only visible in a rendered frame. */}
+      {/* No felt watermark here: the seats fill the whole felt and are
+          translucent, so the brand text showed straight through four hands of
+          cards. Only visible in a rendered frame. */}
       <div className="hearts-table">
-        <div className="hearts-seats">
-          {seats.length === 0 && <div className="empty-hand">No models seated yet.</div>}
-          {seats.map((seat) => (
-            <SeatStrip
-              key={seat.id}
-              seat={seat}
-              acting={seat.seatIndex === state.actingSeatIndex}
-              leading={seat.seatIndex === state.leadSeatIndex && state.phase === 'playing'}
-              thinking={Boolean(thinking[seat.id])}
-              isLeader={seat.totalScore === best && state.handsPlayed > 0}
-              phase={state.phase}
-            />
-          ))}
-        </div>
+        {seats.length === 0 && <div className="empty-hand">No models seated yet.</div>}
+
+        {/* Round the table: play passes to the left, so seat order runs
+            south → west → north → east, which is what the compass positions
+            below encode. */}
+        {seats.map((seat) => (
+          <SeatBox
+            key={seat.id}
+            seat={seat}
+            position={COMPASS[seat.seatIndex] ?? 'south'}
+            acting={seat.seatIndex === state.actingSeatIndex}
+            leading={seat.seatIndex === state.leadSeatIndex && state.phase === 'playing'}
+            thinking={Boolean(thinking[seat.id])}
+            isLeader={seat.totalScore === best && state.handsPlayed > 0}
+            phase={state.phase}
+          />
+        ))}
 
         <div className="hearts-centre">
           <div className="hearts-trick-head">
@@ -87,6 +90,7 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
                 : `Trick ${state.trickNumber} of 13`}
           </div>
 
+          {/* Always a 2x2 block, so four cards never wrap three-then-one. */}
           <div className="hearts-trick">
             {trick && trick.plays.length > 0 ? (
               trick.plays.map((play) => (
@@ -97,7 +101,7 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
                     (trick.winnerSeatIndex === play.seatIndex ? ' hearts-trick-winner' : '')
                   }
                 >
-                  <PlayingCard card={play.card} size="md" dimmed={!trickIsLive} />
+                  <PlayingCard card={play.card} size="md" />
                   <span className="hearts-trick-who">{state.players[play.seatIndex]?.name}</span>
                 </div>
               ))
@@ -108,10 +112,16 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
             )}
           </div>
 
+          {/* The trick result gets a full step of its own before the cards are
+              swept up, so it is legible rather than a flicker. */}
           {trick?.winnerName && !trickIsLive && (
             <div className="hearts-trick-result">
-              {trick.winnerName} takes it
-              {trick.points > 0 ? ` · ${trick.points} point${trick.points === 1 ? '' : 's'}` : ' · no points'}
+              <span className="hearts-takes">{trick.winnerName} takes it</span>
+              <span className={trick.points > 0 ? 'hearts-took-points' : 'hearts-took-none'}>
+                {trick.points > 0
+                  ? `+${trick.points} point${trick.points === 1 ? '' : 's'}`
+                  : 'no points'}
+              </span>
             </div>
           )}
 
@@ -166,8 +176,17 @@ function leaderText(seats: HeartsPlayer[], best: number, handsPlayed: number): s
   return leaders.length === 1 ? `${leaders[0].name} ${best}` : `tied on ${best}`
 }
 
-function SeatStrip({
+type Compass = 'south' | 'west' | 'north' | 'east'
+
+/**
+ * Seat 0 sits south and play passes to the left, so the seats run
+ * south → west → north → east round the table.
+ */
+const COMPASS: Compass[] = ['south', 'west', 'north', 'east']
+
+function SeatBox({
   seat,
+  position,
   acting,
   leading,
   thinking,
@@ -175,15 +194,19 @@ function SeatStrip({
   phase
 }: {
   seat: HeartsPlayer
+  position: Compass
   acting: boolean
   leading: boolean
   thinking: boolean
   isLeader: boolean
   phase: HeartsState['phase']
 }): React.JSX.Element {
-  const classes = ['hearts-seat']
+  const classes = ['hearts-seat', `hearts-seat-${position}`]
   if (acting || thinking) classes.push('hearts-seat-acting')
   if (isLeader) classes.push('hearts-seat-leader')
+  // East and west have no width to spare on a felt this narrow, so their hands
+  // fan downwards instead of across.
+  const vertical = position === 'east' || position === 'west'
 
   return (
     <div className={classes.join(' ')}>
@@ -225,7 +248,7 @@ function SeatStrip({
         ) : (
           // The spectator sees every hand, exactly as at poker. The models never
           // do: their prompts render only their own.
-          <Fan cards={seat.hand} />
+          <Fan cards={seat.hand} vertical={vertical} />
         )}
       </div>
     </div>
@@ -233,12 +256,13 @@ function SeatStrip({
 }
 
 /**
- * Thirteen cards is far too wide for a card row at this felt width, so they
- * overlap. Width is the layout risk in this game, not seat count.
+ * Thirteen cards will not fit side by side on a felt this narrow, so they
+ * overlap. Width is the layout risk in this game, not seat count — which is why
+ * the east and west hands fan downwards instead.
  */
-function Fan({ cards }: { cards: Card[] }): React.JSX.Element {
+function Fan({ cards, vertical }: { cards: Card[]; vertical: boolean }): React.JSX.Element {
   return (
-    <div className="card-fan">
+    <div className={vertical ? 'card-fan card-fan-down' : 'card-fan'}>
       {cards.map((card) => (
         <PlayingCard key={cardCode(card)} card={card} size="sm" />
       ))}

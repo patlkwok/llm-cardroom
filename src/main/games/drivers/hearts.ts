@@ -116,8 +116,19 @@ export class HeartsDriver implements GameDriver {
               : ` (${trick.plays.map((p) => cardCode(p.card)).join(' ')}).`),
           trick.winnerSeatIndex === undefined ? undefined : table.state.players[trick.winnerSeatIndex].id
         )
+
+        // The result is its own step: all four cards stay on the felt with the
+        // winner marked for a full beat, so the operator can actually read who
+        // took the trick and what it cost them. A trick that carries points
+        // lingers a little longer, because that is the moment that matters.
         ctx.pushSnapshot()
-        await ctx.beat(trick.points > 0 ? 1.2 : 0.8)
+        await ctx.beat(trick.points > 0 ? 1.5 : 1)
+
+        // Only now are the cards swept up and the next trick led.
+        if (table.awaitingNextTrick && !ctx.isStopping) {
+          table.startNextTrick()
+          ctx.pushSnapshot()
+        }
       }
     }
 

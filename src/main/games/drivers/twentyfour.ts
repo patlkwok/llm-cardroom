@@ -5,6 +5,15 @@ import type { AgentResult } from '../agent.ts'
 import type { DriverContext, GameDriver, RosterTable } from '../driver.ts'
 import { puzzleValue, TwentyFourTable, type TwentyFourAnswer } from '../twentyfour/engine.ts'
 import { buildTwentyFourPrompt, parseTwentyFourReply } from '../prompts/twentyfour.ts'
+import { tokenBudget } from '../../openrouter.ts'
+
+/**
+ * Least thinking room a 24 answer gets, whatever the reasoning effort says.
+ * Searching four numbers for 24 is an open problem, not a menu, and the models
+ * that reason unprompted routinely spend a few thousand tokens on it before
+ * writing a character.
+ */
+const TWENTYFOUR_TOKEN_FLOOR = 8000
 
 /**
  * The 24 puzzle: everyone answers the same four cards at once.
@@ -149,6 +158,15 @@ export class TwentyFourDriver implements GameDriver {
             parse: parseTwentyFourReply,
             // No answer at all is graded as a miss, not as a wrong answer.
             fallback: null,
+            // The hardest question this app asks. Every other game offers a
+            // choice between named actions; this one is an open search, and a
+            // model that reasons will spend thousands of tokens on it before
+            // writing anything. Starting tight guarantees a truncated reply,
+            // and a truncated reply is billed in full while returning nothing.
+            //
+            // A floor, not an override: a seat set to high effort keeps its own
+            // larger budget.
+            maxTokens: Math.max(tokenBudget(player.reasoningEffort), TWENTYFOUR_TOKEN_FLOOR),
             // A throw here would be swallowed by allSettled; the scan below
             // rethrows once every answer is in. See the comment on the scan.
             failFast: false

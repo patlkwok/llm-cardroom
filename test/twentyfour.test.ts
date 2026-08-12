@@ -377,24 +377,59 @@ test('a deal is never filtered for solvability', () => {
 
 test('the reply parser reads expressions and no-solution claims alike', () => {
   const cases: Array<[string, string | null]> = [
+    // The asked-for shape: a bare expression and nothing else.
+    ['(6*4)*(3-2)', '(6*4)*(3-2)'],
+    ['8/(3-8/3)', '8/(3-8/3)'],
+    ['no solution', null],
+    ['No solution.', null],
+    ['none', null],
+    ['impossible', null],
+
+    // JSON is still accepted from a model that volunteers it.
     ['{"reasoning":"r","expression":"(6*4)*(3-2)"}', '(6*4)*(3-2)'],
     ['{"reasoning":"r","expression":"6*4 = 24"}', '6*4'],
     ['{"reasoning":"r","expression":"none"}', null],
-    ['{"reasoning":"r","expression":"None."}', null],
-    ['{"reasoning":"r","expression":"no solution"}', null],
-    ['{"reasoning":"r","expression":"impossible"}', null],
     ['{"reasoning":"r","answer":"8/(3-8/3)"}', '8/(3-8/3)'],
-    ['```json\n{"reasoning":"r","expression":"1+2+3+18"}\n```', '1+2+3+18']
+    ['```json\n{"reasoning":"r","expression":"1+2+3+18"}\n```', '1+2+3+18'],
+
+    // What models actually send when asked for a bare answer.
+    ['The answer is (6 * 4) * (3 - 2)', '(6 * 4) * (3 - 2)'],
+    ['Answer: 6*4*(3-2)', '6*4*(3-2)'],
+    ['`(6*4)*(3-2)`', '(6*4)*(3-2)'],
+    ['```\n(6*4)*(3-2)\n```', '(6*4)*(3-2)'],
+    ['**(6*4)*(3-2)**', '(6*4)*(3-2)'],
+    ['(6*4)*(3-2) = 24', '(6*4)*(3-2)'],
+    ['6 × 4 × (3 − 2)', '6 × 4 × (3 − 2)'],
+
+    // Reasoning first, answer last — the instruction is that the last line is
+    // the answer, so the parser reads from the bottom.
+    ['Let me think. 6*4 = 24 and 3-2 = 1.\nSo:\n(6*4)*(3-2)', '(6*4)*(3-2)'],
+    ['I tried 11-7=4 and 6*4=24 but that leaves nothing.\nno solution', null]
   ]
   for (const [reply, expected] of cases) {
     const outcome = parseTwentyFourReply(reply)
     assert.equal(outcome.ok, true, `${reply} should parse`)
-    assert.equal(outcome.value, expected, `for ${reply}`)
+    assert.equal(outcome.value, expected, `for ${JSON.stringify(reply)}`)
   }
 
-  for (const bad of ['not json at all', '{"reasoning":"r"}', '{"expression":""}']) {
-    assert.equal(parseTwentyFourReply(bad).ok, false, `${bad} should be rejected`)
+  for (const bad of ['', '   ', 'I am not going to answer that', '{"reasoning":"r"}']) {
+    assert.equal(parseTwentyFourReply(bad).ok, false, `${JSON.stringify(bad)} should be rejected`)
   }
+})
+
+test('a bare * is multiplication, not markdown emphasis', () => {
+  // Stripping `*` as a bold marker silently turned `(6*4)*(3-2)` into
+  // `(64)(3-2)` — an answer the model never gave, that still looks plausible.
+  for (const reply of ['(6*4)*(3-2)', '**(6*4)*(3-2)**', '`6*4*1*1`']) {
+    const value = parseTwentyFourReply(reply).value
+    assert.ok(typeof value === 'string')
+    assert.ok(value.includes('*'), `multiplication was stripped out of ${reply}: got ${value}`)
+  }
+  // And the round-trip must still evaluate to what the model meant.
+  const value = parseTwentyFourReply('**(6*4)*(3-2)**').value as string
+  const check = validateExpression(value, [6, 4, 3, 2])
+  assert.equal(check.ok, true, check.problem ?? '')
+  assert.ok(equals(check.value!, TARGET))
 })
 
 test('a wrong expression is accepted by the parser and judged by the engine', () => {

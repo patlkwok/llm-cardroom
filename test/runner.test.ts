@@ -597,7 +597,7 @@ test('an illegal action is rejected and retried before falling back', async () =
   assert.ok(retried.length > 0, 'at least one decision needed a second attempt')
 
   // The corrective message must tell the model what went wrong.
-  const corrections = sink.prompts.filter((p) => p.includes('Reply again with only the JSON object'))
+  const corrections = sink.prompts.filter((p) => p.includes('Try again, and reply with the answer only'))
   assert.ok(corrections.length > 0)
   assert.ok(
     corrections.some((c) => /not legal right now|is not an action/.test(c)),
@@ -673,11 +673,11 @@ test('reasoning effort shapes the request body, and temperature is never sent', 
   }) as unknown as typeof fetch
 
   const cases: Array<[MatchSettings['players'][number]['reasoningEffort'], unknown, number]> = [
-    ['default', undefined, 900],
-    ['none', { enabled: false }, 900],
-    ['low', { effort: 'low' }, 3000],
-    ['medium', { effort: 'medium' }, 6000],
-    ['high', { effort: 'high' }, 12000]
+    ['default', undefined, 4000],
+    ['none', { enabled: false }, 1200],
+    ['low', { effort: 'low' }, 6000],
+    ['medium', { effort: 'medium' }, 12000],
+    ['high', { effort: 'high' }, 24000]
   ]
 
   for (const [effort, expectedReasoning, expectedBudget] of cases) {
@@ -877,7 +877,12 @@ test('a model that always insures sees both outcomes, and the books balance', as
   const sink = capture()
   mockOpenRouter(alwaysInsures, sink)
 
-  const settings = blackjackSettings({ maxRounds: 400 })
+  // 800 rounds, not 400. The dealer shows an ace about 1 round in 13, so 400
+  // rounds only yields ~30 insurance bets, and at p≈0.31 that is a standard
+  // deviation of 0.08 — wide enough that the old lower bound of 0.12 sat barely
+  // 2.2 sigma out and flaked. Doubling the sample halves the noise instead of
+  // just loosening the assertion until it stops complaining.
+  const settings = blackjackSettings({ maxRounds: 800 })
   settings.blackjack = { ...settings.blackjack, offerInsurance: true, startingBankroll: 1_000_000 }
   await new MatchRunner(settings, 'test-key', sink.emit).run()
 
@@ -889,21 +894,23 @@ test('a model that always insures sees both outcomes, and the books balance', as
   const won = texts.filter((t) => t.includes('Insurance pays 2:1'))
   const lost = texts.filter((t) => t.includes('Insurance loses'))
 
-  assert.ok(taken.length > 10, `insurance should be taken often, saw ${taken.length}`)
+  assert.ok(taken.length > 25, `insurance should be taken often, saw ${taken.length}`)
   assert.equal(won.length + lost.length, taken.length, 'every side bet settles exactly once')
   assert.ok(won.length > 0, 'the dealer should turn over blackjack sometimes')
   assert.ok(lost.length > 0, 'and not have it most of the time')
 
-  // The dealer holds blackjack behind an ace roughly 4/13 of the time; a wildly
-  // different rate would mean the peek or the offer is wired up wrongly.
+  // The dealer holds blackjack behind an ace roughly 4/13 = 0.31 of the time.
+  // The band is deliberately generous — its job is to catch the peek reading
+  // the wrong card, which would land near 0 or near 1, not to police sampling
+  // noise. At ~60 bets this is about four sigma either side.
   const winRate = won.length / taken.length
-  assert.ok(winRate > 0.12 && winRate < 0.55, `insurance win rate looks wrong: ${winRate.toFixed(2)}`)
+  assert.ok(winRate > 0.10 && winRate < 0.58, `insurance win rate looks wrong: ${winRate.toFixed(2)}`)
 
   const final = sink.events.filter((e) => e.type === 'snapshot').pop()
   assert.equal(final?.type, 'snapshot')
   const bj = tableOf(final.snapshot, 'blackjack')
   assert.ok(bj)
-  assert.equal(bj.roundsPlayed, 400)
+  assert.equal(bj.roundsPlayed, 800)
   assert.equal(
     bj.players[0].bankroll,
     1_000_000 + bj.players[0].sessionNet,
@@ -1845,14 +1852,18 @@ test('an unsolvable deal can be answered with "none", and it scores', async () =
   // Always claim there is no solution, whatever the deal.
   mockOpenRouter(() => JSON.stringify({ reasoning: 'Cannot be done.', expression: 'none' }), sink)
 
-  await new MatchRunner(twentyFourSettings(2, { maxRounds: 25 }), 'test-key', sink.emit).run()
+  // 40 rounds, not 25, purely to drain the luck out of the assertion below:
+  // deals are random and ~74.8% are solvable, so "at least one was impossible"
+  // fails about once in 1,400 runs at 25 rounds and once in 90,000 at 40. A
+  // rare flake in a suite that runs on every push is still a flake.
+  await new MatchRunner(twentyFourSettings(2, { maxRounds: 40 }), 'test-key', sink.emit).run()
 
   const tf = tableOf(finalSnapshot(sink), 'twentyfour')
   assert.ok(tf)
   const solved = tf.players.reduce((sum, p) => sum + p.solved, 0)
   const wrong = tf.players.reduce((sum, p) => sum + p.wrong, 0)
-  // About a quarter of deals are impossible, so over 25 rounds this strategy
-  // should be right sometimes and wrong most of the time.
+  // About a quarter of deals are impossible, so this strategy should be right
+  // sometimes and wrong most of the time.
   assert.ok(solved > 0, 'some deals really are impossible, and saying so is correct')
   assert.ok(wrong > solved, 'but most deals are solvable, so it is usually wrong')
 
@@ -1976,4 +1987,182 @@ test('a rate-limited model is not punished for its retry when the round is score
   // And the retry itself is still reported honestly in the usage stats.
   const stats = finalSnapshot(sink).stats.find((s) => s.playerId === 'p0')
   assert.ok((stats?.errors ?? 0) > 0, 'the 429 is still counted as a failed attempt')
+})
+
+/* ------------------------------------------------- truncated replies */
+
+/**
+ * A reasoning model that spends its whole budget thinking. It answers only
+ * once `max_tokens` is at least `needs`, and reports `finish_reason: "length"`
+ * until then — which is exactly what every failing model in a real session was
+ * doing.
+ */
+function mockThinker(needs: number, answer: string, seen: number[] = []): void {
+  globalThis.fetch = (async (_url: string, init: { body: string }) => {
+    const body = JSON.parse(init.body) as {
+      max_tokens: number
+      messages: Array<{ role: string; content: string }>
+    }
+    seen.push(body.max_tokens)
+    const enough = body.max_tokens >= needs
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: enough ? answer : '',
+              reasoning: 'Considering the options at some length'
+            },
+            finish_reason: enough ? 'stop' : 'length'
+          }
+        ],
+        usage: { prompt_tokens: 100, completion_tokens: body.max_tokens, cost: 0.0001 }
+      })
+    }
+  }) as unknown as typeof fetch
+}
+
+test('a reply cut off at the token ceiling is retried with more room, not corrected', async () => {
+  const sink = capture()
+  const budgets: number[] = []
+  // Needs more than the 4000-token default, but less than one escalation gives.
+  mockThinker(9000, JSON.stringify({ reasoning: 'Standing.', action: 'stand' }), budgets)
+
+  await new MatchRunner(blackjackSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  assert.ok(budgets.length >= 2, 'it should have tried again')
+  assert.ok(
+    budgets[1] > budgets[0],
+    `the retry must get a bigger budget, saw ${budgets.join(' then ')}`
+  )
+  assert.equal(finalSnapshot(sink).status, 'finished')
+
+  // The operator is told what actually went wrong. Telling a model to fix its
+  // JSON when it never reached the answer is both untrue and useless.
+  const errors = sink.events
+    .filter((e) => e.type === 'log' && e.entry.level === 'error')
+    .map((e) => (e.type === 'log' ? e.entry.text : ''))
+  assert.ok(
+    errors.some((t) => /whole \d+-token budget|Cut off after/.test(t)),
+    `the truncation should be named, saw: ${errors.join(' | ')}`
+  )
+  assert.ok(
+    errors.some((t) => /Retrying with a \d+-token budget/.test(t)),
+    'and the bigger retry should be reported'
+  )
+  assert.ok(
+    !errors.some((t) => /not valid JSON/.test(t)),
+    `a truncated reply must not be blamed on JSON: ${errors.join(' | ')}`
+  )
+})
+
+test('a model that answers within budget is never given a bigger one', async () => {
+  const sink = capture()
+  const budgets: number[] = []
+  mockThinker(0, JSON.stringify({ reasoning: 'Standing.', action: 'stand' }), budgets)
+
+  await new MatchRunner(blackjackSettings({ maxRounds: 2 }), 'test-key', sink.emit).run()
+
+  assert.ok(budgets.length > 0)
+  assert.equal(new Set(budgets).size, 1, 'the budget only grows in response to truncation')
+})
+
+test('the 24 puzzle starts with more thinking room than a menu choice does', async () => {
+  const sink = capture()
+  const budgets: number[] = []
+  mockThinker(0, '(6*4)*(3-2)', budgets)
+
+  await new MatchRunner(twentyFourSettings(2, { maxRounds: 1 }), 'test-key', sink.emit).run()
+  const puzzleBudget = budgets[0]
+
+  budgets.length = 0
+  mockThinker(0, JSON.stringify({ reasoning: 'Standing.', action: 'stand' }), budgets)
+  await new MatchRunner(blackjackSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  assert.ok(
+    puzzleBudget > budgets[0],
+    `an open search needs more room than a four-way choice: ${puzzleBudget} vs ${budgets[0]}`
+  )
+})
+
+test('a plain-text answer is accepted, so no JSON envelope is needed at all', async () => {
+  const sink = capture()
+  // Exactly the contract the prompt now asks for: the expression, alone.
+  mockOpenRouter((prompt) => {
+    const line = prompt.match(/Make 24 using ([\d, ]+) —/)
+    if (!line) return 'no solution'
+    const values = line[1].split(',').map((n) => Number(n.trim()))
+    return solve(values) ?? 'no solution'
+  }, sink)
+
+  await new MatchRunner(twentyFourSettings(3, { maxRounds: 3 }), 'test-key', sink.emit).run()
+
+  const tf = tableOf(finalSnapshot(sink), 'twentyfour')
+  assert.ok(tf)
+  for (const player of tf.players) {
+    assert.equal(player.solved, 3, `${player.name} solved every puzzle without any JSON`)
+  }
+  const decisions = sink.events.filter((e) => e.type === 'decision')
+  for (const event of decisions) {
+    if (event.type !== 'decision') continue
+    assert.equal(event.record.fallback, undefined, 'a bare expression is not a fallback')
+    assert.equal(event.record.attempts, 1, 'and needs no retry')
+  }
+})
+
+test('the 24 prompt asks for a bare answer rather than a JSON object', async () => {
+  const sink = capture()
+  mockOpenRouter(() => 'no solution', sink)
+
+  await new MatchRunner(twentyFourSettings(2, { maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  for (const system of sink.systemPrompts) {
+    assert.match(system, /Reply with the expression on its own/i)
+    assert.match(system, /exactly:\n\n {4}no solution/)
+    assert.match(system, /No JSON/i)
+  }
+})
+
+test('a completed trick stays on the felt with its winner before being swept up', async () => {
+  const sink = capture()
+  mockOpenRouter(respondHearts, sink)
+
+  await new MatchRunner(heartsSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  const states = sink.events
+    .filter((e) => e.type === 'snapshot')
+    .map((e) => (e.type === 'snapshot' ? tableOf(e.snapshot, 'hearts') : undefined))
+    .filter((h) => h !== undefined)
+
+  // The frame the operator needs: four cards down, nobody to act, and the
+  // winner named. Resolving and opening the next trick in one call meant this
+  // state was never in any snapshot at all — the cards vanished in the same
+  // frame they were completed in.
+  const resolved = states.filter(
+    (h) =>
+      h.currentTrick === null &&
+      h.lastTrick !== null &&
+      h.lastTrick.plays.length === 4 &&
+      h.lastTrick.winnerName !== undefined
+  )
+  assert.ok(
+    resolved.length >= 13,
+    `every trick should get a frame of its own, saw ${resolved.length} for 13 tricks`
+  )
+
+  // And each of those frames must name a real seat as the winner.
+  for (const frame of resolved) {
+    const names = frame.players.map((p) => p.name)
+    assert.ok(
+      names.includes(frame.lastTrick!.winnerName!),
+      `${frame.lastTrick!.winnerName} is not at this table`
+    )
+    assert.equal(frame.actingSeatIndex, -1, 'nobody is on turn while the result is shown')
+  }
+
+  // The trick that follows must actually start fresh, not inherit the old one.
+  const opened = states.filter((h) => h.currentTrick !== null && h.currentTrick.plays.length === 0)
+  assert.ok(opened.length > 0, 'the next trick is opened as its own step')
 })
