@@ -1,7 +1,7 @@
 import test, { afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { MatchRunner } from '../src/main/games/runner.ts'
-import { defaultSettings, type MatchEvent, type MatchSettings } from '../src/shared/types.ts'
+import { defaultSettings, tableOf, type MatchEvent, type MatchSettings } from '../src/shared/types.ts'
 
 const realFetch = globalThis.fetch
 
@@ -178,7 +178,7 @@ test('a blackjack session runs end to end against a mocked model', async () => {
   assert.equal(final.type, 'snapshot')
   assert.equal(final.snapshot.status, 'finished')
 
-  const bj = final.snapshot.blackjack
+  const bj = tableOf(final.snapshot, 'blackjack')
   assert.ok(bj)
   assert.equal(bj.roundsPlayed, 8, 'played the requested number of rounds')
   const seat = bj.players[0]
@@ -225,7 +225,7 @@ test('several models share one blackjack shoe and one dealer', async () => {
 
   const snapshot = finalSnapshot(sink)
   assert.equal(snapshot.status, 'finished')
-  const bj = snapshot.blackjack
+  const bj = tableOf(snapshot, 'blackjack')
   assert.ok(bj)
   assert.equal(bj.players.length, 4)
   assert.equal(bj.roundsPlayed, 6)
@@ -320,7 +320,7 @@ test('every seat is offered insurance in its own right', async () => {
   const names = new Set(taken.map((t) => t.split(' takes insurance')[0]))
   assert.equal(names.size, 3, `every seat bought insurance at some point, saw ${[...names]}`)
 
-  const bj = finalSnapshot(sink).blackjack
+  const bj = tableOf(finalSnapshot(sink), 'blackjack')
   assert.ok(bj)
   for (const seat of bj.players) {
     assert.equal(seat.bankroll, 100000 + seat.sessionNet, `${seat.name} balances`)
@@ -347,7 +347,7 @@ test('a model can join a blackjack table mid-match, from the next round', async 
   await new Promise((r) => setTimeout(r, 150))
   const paused = finalSnapshot(sink)
   assert.equal(paused.status, 'paused', 'the table waits for setup')
-  assert.ok(!paused.blackjack?.players.some((p) => p.id === 'late'), 'not seated yet')
+  assert.ok(!tableOf(paused, 'blackjack')?.players.some((p) => p.id === 'late'), 'not seated yet')
 
   runner.resume()
   await new Promise((r) => setTimeout(r, 500))
@@ -360,7 +360,7 @@ test('a model can join a blackjack table mid-match, from the next round', async 
   // The seat count may only change between rounds, never during one.
   assert.match(texts[joinIndex + 1] ?? '', /^Round \d+:/, 'the join lands right before a new round')
 
-  const bj = finalSnapshot(sink).blackjack
+  const bj = tableOf(finalSnapshot(sink), 'blackjack')
   assert.ok(bj)
   assert.equal(bj.players.length, 3)
   const late = bj.players.find((p) => p.id === 'late')
@@ -388,7 +388,7 @@ test('a blackjack model can be removed mid-match and takes its chips', async () 
     'the departure is announced with the chips taken'
   )
 
-  const bj = finalSnapshot(sink).blackjack
+  const bj = tableOf(finalSnapshot(sink), 'blackjack')
   assert.ok(bj)
   assert.equal(bj.players.length, 2)
   assert.ok(!bj.players.some((p) => p.id === 'p2'))
@@ -447,8 +447,10 @@ test('a blackjack seat that busts out is announced once, not every later round',
   // again is a hand with no outcome — one still being played.
   const out = new Set<string>()
   for (const event of sink.events) {
-    if (event.type !== 'snapshot' || !event.snapshot.blackjack) continue
-    for (const seat of event.snapshot.blackjack.players) {
+    if (event.type !== 'snapshot') continue
+    const bj = tableOf(event.snapshot, 'blackjack')
+    if (!bj) continue
+    for (const seat of bj.players) {
       if (out.has(seat.id)) {
         assert.ok(
           seat.hands.every((hand) => hand.outcome !== undefined),
@@ -474,7 +476,7 @@ test('a poker match runs end to end and conserves chips', async () => {
   assert.equal(final.type, 'snapshot')
   assert.equal(final.snapshot.status, 'finished')
 
-  const poker = final.snapshot.poker
+  const poker = tableOf(final.snapshot, 'poker')
   assert.ok(poker)
   assert.ok(poker.handsPlayed >= 1)
 
@@ -530,7 +532,7 @@ test('a fold redistributes the win probabilities in the very same snapshot', asy
 
   const states = sink.events
     .filter((e) => e.type === 'snapshot')
-    .map((e) => (e.type === 'snapshot' ? e.snapshot.poker : undefined))
+    .map((e) => (e.type === 'snapshot' ? tableOf(e.snapshot, 'poker') : undefined))
 
   // The first frame the operator sees with somebody folded must already show
   // the redistribution. Refreshing after the push left the new numbers stranded
@@ -566,7 +568,7 @@ test('a model that never returns valid JSON falls back instead of stalling', asy
   const final = snapshots[snapshots.length - 1]
   assert.equal(final.type, 'snapshot')
   assert.equal(final.snapshot.status, 'finished')
-  assert.equal(final.snapshot.blackjack?.roundsPlayed, 3, 'the table kept moving')
+  assert.equal(tableOf(final.snapshot, 'blackjack')?.roundsPlayed, 3, 'the table kept moving')
 
   const decisions = sink.events.filter((e) => e.type === 'decision')
   for (const event of decisions) {
@@ -861,7 +863,7 @@ test('the model is asked about insurance and the side bet settles', async () => 
 
   const final = sink.events.filter((e) => e.type === 'snapshot').pop()
   assert.equal(final?.type, 'snapshot')
-  const bj = final.snapshot.blackjack
+  const bj = tableOf(final.snapshot, 'blackjack')
   assert.ok(bj)
   assert.equal(
     bj.players[0].bankroll,
@@ -898,7 +900,7 @@ test('a model that always insures sees both outcomes, and the books balance', as
 
   const final = sink.events.filter((e) => e.type === 'snapshot').pop()
   assert.equal(final?.type, 'snapshot')
-  const bj = final.snapshot.blackjack
+  const bj = tableOf(final.snapshot, 'blackjack')
   assert.ok(bj)
   assert.equal(bj.roundsPlayed, 400)
   assert.equal(
@@ -975,7 +977,7 @@ test('a model that cannot answer the insurance offer declines and plays on', asy
   const final = sink.events.filter((e) => e.type === 'snapshot').pop()
   assert.equal(final?.type, 'snapshot')
   assert.equal(final.snapshot.status, 'finished')
-  assert.equal(final.snapshot.blackjack?.roundsPlayed, 80)
+  assert.equal(tableOf(final.snapshot, 'blackjack')?.roundsPlayed, 80)
 })
 
 test('a model can join a poker table mid-match, from the next hand', async () => {
@@ -1008,7 +1010,7 @@ test('a model can join a poker table mid-match, from the next hand', async () =>
 
   const final = sink.events.filter((e) => e.type === 'snapshot').pop()
   assert.equal(final?.type, 'snapshot')
-  const poker = final.snapshot.poker
+  const poker = tableOf(final.snapshot, 'poker')
   assert.ok(poker)
   assert.equal(poker.seats.length, 4)
   assert.ok(poker.seats.some((s) => s.id === 'late'))
@@ -1051,7 +1053,7 @@ test('adding a model mid-match pauses so its effort can still be set', async () 
     'the operator is told why'
   )
   // Not seated yet, so nothing has been dealt to the newcomer.
-  assert.ok(!snap.snapshot.poker?.seats.some((s) => s.id === 'late'))
+  assert.ok(!tableOf(snap.snapshot, 'poker')?.seats.some((s) => s.id === 'late'))
 
   // Raise the newcomer's effort while paused, then resume.
   runner.applyLiveSettings({
@@ -1114,7 +1116,7 @@ test('a model waiting to join can still be renamed, and joins under the new name
   assert.ok(!texts.some((t) => t.includes('Placeholder joins the table')), 'and not under the old one')
 
   const snapshot = finalSnapshot(sink)
-  const seat = snapshot.poker?.seats.find((s) => s.id === 'late')
+  const seat = tableOf(snapshot, 'poker')?.seats.find((s) => s.id === 'late')
   assert.ok(seat, 'the newcomer took a seat')
   assert.equal(seat.name, 'Renamed Bot', 'the felt shows the edited name')
   assert.equal(
@@ -1189,7 +1191,7 @@ test("a seated model's name is fixed for the match", async () => {
   for (const player of snapshot.players) {
     assert.match(player.name, /^Bot\d$/, `${player.name} kept the name it sat down with`)
   }
-  for (const seat of snapshot.poker?.seats ?? []) {
+  for (const seat of tableOf(snapshot, 'poker')?.seats ?? []) {
     assert.match(seat.name, /^Bot\d$/, `${seat.name} kept the name it sat down with`)
   }
 })
@@ -1245,8 +1247,8 @@ test('a model can be removed mid-match and takes its chips', async () => {
 
   const final = sink.events.filter((e) => e.type === 'snapshot').pop()
   assert.equal(final?.type, 'snapshot')
-  assert.equal(final.snapshot.poker?.seats.length, 3)
-  assert.ok(!final.snapshot.poker?.seats.some((s) => s.id === 'p3'))
+  assert.equal(tableOf(final.snapshot, 'poker')?.seats.length, 3)
+  assert.ok(!tableOf(final.snapshot, 'poker')?.seats.some((s) => s.id === 'p3'))
 })
 
 test('dropping below two players closes the table', async () => {
@@ -1295,7 +1297,7 @@ test('a rejected API key stops the match instead of falling back forever', async
 
   // It must give up immediately, not grind through 50 rounds of fallbacks.
   assert.ok(
-    (final.snapshot.blackjack?.roundsPlayed ?? 99) <= 1,
+    (tableOf(final.snapshot, 'blackjack')?.roundsPlayed ?? 99) <= 1,
     'stopped on the first failure'
   )
   const decisions = sink.events.filter((e) => e.type === 'decision')

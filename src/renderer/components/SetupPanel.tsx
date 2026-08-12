@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { KeyCheck } from '../App.tsx'
 import {
+  GAME_KINDS,
   GAMES,
   REASONING_EFFORTS,
   type GameKind,
@@ -10,6 +11,8 @@ import {
   type PlayerConfig,
   type ReasoningEffort
 } from '../../shared/types.ts'
+import { Field, NumberInput, Toggle } from './setup/controls.tsx'
+import { RULES_PANELS } from './setup/rulesPanels.tsx'
 
 interface Props {
   settings: MatchSettings
@@ -31,27 +34,44 @@ interface Props {
   onStop: () => void
 }
 
+/** What each game is for, in one line, under the selector. */
+const GAME_BLURB: Record<GameKind, (settings: MatchSettings) => string> = {
+  blackjack: (s) =>
+    `One to ${GAMES.blackjack.maxPlayers} models play the house dealer, sharing a single shoe. ` +
+    'They never play each other, but they see the same cards burn.',
+  poker: () => `Two to ${GAMES.poker.maxPlayers} models play No-Limit Texas Hold'em against each other.`,
+  hearts: () =>
+    'Exactly four models pass three cards and play thirteen tricks, dodging hearts and ' +
+    'the queen of spades. Lowest score wins.',
+  twentyfour: (s) =>
+    `Up to ${GAMES.twentyfour.maxPlayers} models race the same four cards to 24, all answering at once. ` +
+    `First correct answer takes the ${GAMES.twentyfour.roundNoun}.`
+}
+
 export function SetupPanel(props: Props): React.JSX.Element {
   const { settings, onChange, status, hasApiKey } = props
   const running = status === 'running' || status === 'paused' || status === 'stopping'
   const locked = running
-  // Both games seat and unseat models between rounds, so the roster itself is
-  // never locked while a match runs — only a seated model's own setup is.
   const players = settings.players
   const game = GAMES[settings.game]
   const { minPlayers, maxPlayers } = game
+  // A fixed-roster game locks its whole line-up at the first deal, so its seats
+  // cannot be added to or taken from mid-match at all.
+  const rosterLocked = locked && game.fixedRoster
+  const exactPlayers = minPlayers === maxPlayers
 
   const readyText = describeReadiness(settings, hasApiKey, props.keyCheck)
+  const RulesPanel = RULES_PANELS[settings.game]
 
   function patch(partial: Partial<MatchSettings>): void {
     onChange({ ...settings, ...partial })
   }
 
   /** Swaps in the other game's roster instead of discarding the current one. */
-  function selectGame(game: GameKind): void {
-    if (game === settings.game) return
+  function selectGame(next: GameKind): void {
+    if (next === settings.game) return
     const benched = { ...settings.benched, [settings.game]: settings.players }
-    onChange({ ...settings, game, players: benched[game] ?? [], benched })
+    onChange({ ...settings, game: next, players: benched[next] ?? [], benched })
   }
 
   return (
@@ -72,28 +92,21 @@ export function SetupPanel(props: Props): React.JSX.Element {
 
       <section className="panel">
         <h3>Game</h3>
+        {/* Two columns, so four games land as a 2x2 rather than four slivers. */}
         <div className="segmented">
-          <button
-            className={settings.game === 'blackjack' ? 'active' : ''}
-            disabled={locked}
-            onClick={() => selectGame('blackjack')}
-          >
-            Blackjack
-          </button>
-          <button
-            className={settings.game === 'poker' ? 'active' : ''}
-            disabled={locked}
-            onClick={() => selectGame('poker')}
-          >
-            Hold'em
-          </button>
+          {GAME_KINDS.map((kind) => (
+            <button
+              key={kind}
+              className={settings.game === kind ? 'active' : ''}
+              disabled={locked}
+              title={GAMES[kind].label}
+              onClick={() => selectGame(kind)}
+            >
+              {GAMES[kind].shortLabel}
+            </button>
+          ))}
         </div>
-        <p className="panel-hint">
-          {settings.game === 'blackjack'
-            ? `One to ${maxPlayers} models play the house dealer, sharing a single shoe. ` +
-              'They never play each other, but they see the same cards burn.'
-            : `Two to ${maxPlayers} models play No-Limit Texas Hold'em against each other.`}
-        </p>
+        <p className="panel-hint">{GAME_BLURB[settings.game](settings)}</p>
       </section>
 
       <section className="panel">
@@ -131,154 +144,52 @@ export function SetupPanel(props: Props): React.JSX.Element {
 
         <button
           className="primary-button block"
-          disabled={players.length >= maxPlayers}
+          disabled={players.length >= maxPlayers || rosterLocked}
           onClick={props.onAddPlayer}
         >
           + Add model
         </button>
-        {running && (
+        {/* A game that seats an exact number should say so, rather than offering
+            an Add button that cannot help. */}
+        {exactPlayers && players.length !== minPlayers && (
           <p className="panel-hint">
-            Seats added or removed now take effect from the next {game.roundNoun}. A
-            player who leaves takes their chips; a player who joins buys in for{' '}
-            {settings.game === 'poker'
-              ? settings.poker.startingStack
-              : settings.blackjack.startingBankroll}
-            .
+            {game.label} needs exactly {minPlayers} models — {players.length} seated.
+          </p>
+        )}
+        {running && rosterLocked && (
+          <p className="panel-hint">
+            {game.label} locks its table for the whole match: nobody joins or leaves
+            once the first hand is dealt.
+          </p>
+        )}
+        {running && !rosterLocked && (
+          <p className="panel-hint">
+            Seats added or removed now take effect from the next {game.roundNoun}.
+            {settings.game === 'twentyfour'
+              ? ' Everyone answers every puzzle, so each extra seat is another call per round.'
+              : ' A player who leaves takes their chips; a player who joins buys in for ' +
+                (settings.game === 'poker'
+                  ? settings.poker.startingStack
+                  : settings.blackjack.startingBankroll) +
+                '.'}
           </p>
         )}
       </section>
 
-      {settings.game === 'blackjack' ? (
-        <section className="panel">
-          <h3>Table rules</h3>
-          <Field label="Starting bankroll">
-            <NumberInput
-              value={settings.blackjack.startingBankroll}
-              min={100}
-              step={100}
-              disabled={locked}
-              onChange={(startingBankroll) =>
-                patch({ blackjack: { ...settings.blackjack, startingBankroll } })
-              }
-            />
-          </Field>
-          {/* Editable mid-match: a new stake applies from the next round. */}
-          <Field label={settings.blackjack.modelChoosesBet ? 'Table minimum' : 'Bet per hand'}>
-            <NumberInput
-              value={settings.blackjack.baseBet}
-              min={5}
-              step={5}
-              onChange={(baseBet) => patch({ blackjack: { ...settings.blackjack, baseBet } })}
-            />
-          </Field>
-          <Toggle
-            label="Model chooses its own bet"
-            checked={settings.blackjack.modelChoosesBet}
-            onChange={(modelChoosesBet) =>
-              patch({ blackjack: { ...settings.blackjack, modelChoosesBet } })
-            }
-          />
-          {settings.blackjack.modelChoosesBet && (
-            <p className="panel-hint">
-              Before each deal the model is shown its bankroll and record, then
-              picks a wager between the table minimum and its whole bankroll.
-            </p>
-          )}
-          {running && (
-            <p className="panel-hint">
-              Stake changes take effect on the next round, not the hand in play.
-            </p>
-          )}
-          <Field label="Decks in shoe">
-            <NumberInput
-              value={settings.blackjack.deckCount}
-              min={1}
-              max={8}
-              disabled={locked}
-              onChange={(deckCount) => patch({ blackjack: { ...settings.blackjack, deckCount } })}
-            />
-          </Field>
-          {players.length > 1 && (
-            <p className="panel-hint">
-              All {players.length} seats are dealt from that one shoe, and each
-              model is shown the others' cards. A real shoe game is face up, and
-              it is what makes counting the cards possible.
-            </p>
-          )}
-          <Toggle
-            label="Offer insurance on dealer ace"
-            checked={settings.blackjack.offerInsurance}
-            disabled={locked}
-            onChange={(offerInsurance) =>
-              patch({ blackjack: { ...settings.blackjack, offerInsurance } })
-            }
-          />
-          <Toggle
-            label="Dealer hits soft 17"
-            checked={settings.blackjack.dealerHitsSoft17}
-            disabled={locked}
-            onChange={(dealerHitsSoft17) =>
-              patch({ blackjack: { ...settings.blackjack, dealerHitsSoft17 } })
-            }
-          />
-          <Toggle
-            label="Double after split"
-            checked={settings.blackjack.doubleAfterSplit}
-            disabled={locked}
-            onChange={(doubleAfterSplit) =>
-              patch({ blackjack: { ...settings.blackjack, doubleAfterSplit } })
-            }
-          />
-        </section>
-      ) : (
-        <section className="panel">
-          <h3>Table rules</h3>
-          <Field label="Starting stack">
-            <NumberInput
-              value={settings.poker.startingStack}
-              min={100}
-              step={100}
-              disabled={locked}
-              onChange={(startingStack) => patch({ poker: { ...settings.poker, startingStack } })}
-            />
-          </Field>
-          <Field label="Small blind">
-            <NumberInput
-              value={settings.poker.smallBlind}
-              min={1}
-              disabled={locked}
-              onChange={(smallBlind) => patch({ poker: { ...settings.poker, smallBlind } })}
-            />
-          </Field>
-          <Field label="Big blind">
-            <NumberInput
-              value={settings.poker.bigBlind}
-              min={2}
-              disabled={locked}
-              onChange={(bigBlind) => patch({ poker: { ...settings.poker, bigBlind } })}
-            />
-          </Field>
-          <Field label="Double blinds every">
-            <NumberInput
-              value={settings.poker.blindIncreaseEvery}
-              min={0}
-              disabled={locked}
-              suffix="hands (0 = never)"
-              onChange={(blindIncreaseEvery) =>
-                patch({ poker: { ...settings.poker, blindIncreaseEvery } })
-              }
-            />
-          </Field>
-          <p className="panel-hint">
-            You see every hole card, like a televised table. Each model still
-            sees only its own.
-          </p>
-        </section>
-      )}
+      <section className="panel">
+        <h3>Table rules</h3>
+        <RulesPanel
+          settings={settings}
+          patch={patch}
+          locked={locked}
+          running={running}
+          playerCount={players.length}
+        />
+      </section>
 
       <section className="panel">
         <h3>Pace</h3>
-        <Field label="Delay between steps">
+        <Field label={game.simultaneous ? 'Delay between rounds' : 'Delay between steps'}>
           <input
             type="range"
             min={0}
@@ -289,6 +200,14 @@ export function SetupPanel(props: Props): React.JSX.Element {
           />
           <span className="range-value">{(settings.stepDelayMs / 1000).toFixed(1)}s</span>
         </Field>
+        {/* A simultaneous round takes as long as its slowest model, so there are
+            no steps within it for a delay to sit between. */}
+        {game.simultaneous && (
+          <p className="panel-hint">
+            A round lasts as long as the slowest model takes to answer, so this
+            paces the gap between puzzles rather than between steps.
+          </p>
+        )}
         <Field label={`Stop after ${game.roundNoun}s`}>
           <NumberInput
             value={settings.maxRounds}
@@ -346,13 +265,19 @@ function describeReadiness(
   hasApiKey: boolean,
   keyCheck: KeyCheck
 ): string {
-  const { minPlayers, maxPlayers } = GAMES[settings.game]
+  const { label, minPlayers, maxPlayers } = GAMES[settings.game]
   if (!hasApiKey) return 'Add your OpenRouter API key to begin.'
   if (keyCheck.state === 'bad') return 'The saved API key was rejected. Replace it before dealing in.'
-  if (settings.players.length < minPlayers) {
+
+  const seated = settings.players.length
+  if (minPlayers === maxPlayers && seated !== minPlayers) {
+    return `${label} needs exactly ${minPlayers} models; ${seated} are seated.`
+  }
+  if (seated < minPlayers) {
     return minPlayers > 1 ? `Seat at least ${minPlayers} models.` : 'Seat a model at the table.'
   }
-  if (settings.players.length > maxPlayers) return `This game seats at most ${maxPlayers}.`
+  if (seated > maxPlayers) return `This game seats at most ${maxPlayers}.`
+
   if (settings.game === 'poker' && settings.poker.bigBlind <= settings.poker.smallBlind) {
     return 'The big blind must be larger than the small blind.'
   }
@@ -361,6 +286,9 @@ function describeReadiness(
   }
   if (settings.game === 'blackjack' && settings.blackjack.baseBet > settings.blackjack.startingBankroll) {
     return 'The bet per hand cannot exceed the bankroll.'
+  }
+  if (settings.game === 'hearts' && settings.hearts.targetScore < 25) {
+    return 'A game of hearts needs a target of at least 25 points.'
   }
   return ''
 }
@@ -608,84 +536,5 @@ function ApiKeySection({
         </p>
       )}
     </section>
-  )
-}
-
-function Field({
-  label,
-  children
-}: {
-  label: string
-  children: React.ReactNode
-}): React.JSX.Element {
-  return (
-    <label className="field">
-      <span className="field-label">{label}</span>
-      <span className="field-control">{children}</span>
-    </label>
-  )
-}
-
-/**
- * Spinner arrows step from `min`, not from zero, so callers should keep `min`
- * a multiple of `step` — otherwise a min of 1 with a step of 5 yields 1, 6, 11.
- */
-function NumberInput({
-  value,
-  onChange,
-  min,
-  max,
-  step = 1,
-  disabled,
-  suffix
-}: {
-  value: number
-  onChange: (value: number) => void
-  min?: number
-  max?: number
-  step?: number
-  disabled?: boolean
-  suffix?: string
-}): React.JSX.Element {
-  return (
-    <>
-      <input
-        type="number"
-        value={value}
-        min={min}
-        max={max}
-        step={step}
-        disabled={disabled}
-        onChange={(event) => {
-          const next = Number(event.target.value)
-          if (Number.isFinite(next)) onChange(next)
-        }}
-      />
-      {suffix && <span className="field-suffix">{suffix}</span>}
-    </>
-  )
-}
-
-function Toggle({
-  label,
-  checked,
-  onChange,
-  disabled
-}: {
-  label: string
-  checked: boolean
-  onChange: (value: boolean) => void
-  disabled?: boolean
-}): React.JSX.Element {
-  return (
-    <label className="toggle">
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.checked)}
-      />
-      <span>{label}</span>
-    </label>
   )
 }

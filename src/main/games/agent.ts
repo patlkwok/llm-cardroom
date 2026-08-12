@@ -1,6 +1,6 @@
 import { chatCompletion, OpenRouterError, type ChatMessage } from '../openrouter.ts'
 import type { PlayerConfig } from '../../shared/types.ts'
-import type { ParseOutcome, Prompt } from './prompts.ts'
+import type { ParseOutcome, Prompt } from './prompts/shared.ts'
 
 export interface AgentResult<T> {
   action: T
@@ -13,7 +13,15 @@ export interface AgentResult<T> {
    * caller should stop rather than fall back for the rest of the match.
    */
   fatalReason?: string
+  /** Wall-clock across every attempt, retries and backoff included. */
   latencyMs: number
+  /**
+   * Just the attempt that produced the answer, with retries and their backoff
+   * excluded. This is what a simultaneous game ranks on: `latencyMs` would let
+   * a 429 — which firing N calls at once is exactly what provokes — decide the
+   * round for reasons that have nothing to do with the question asked.
+   */
+  finalAttemptMs: number
   promptTokens: number
   completionTokens: number
   costUsd: number
@@ -51,11 +59,14 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
   let lastReasoning = ''
   let fatalReason: string | undefined
 
+  let finalAttemptMs = 0
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (signal?.aborted) break
 
     let text: string
     let reasoningChannel = ''
+    const attemptStarted = Date.now()
     try {
       const result = await chatCompletion({
         apiKey,
@@ -69,8 +80,10 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
       promptTokens += result.promptTokens
       completionTokens += result.completionTokens
       costUsd += result.costUsd
+      finalAttemptMs = Date.now() - attemptStarted
     } catch (error) {
       const err = error as OpenRouterError
+      finalAttemptMs = Date.now() - attemptStarted
       lastProblem = err.message
       if (signal?.aborted) break
       if (err instanceof OpenRouterError && err.fatal) {
@@ -95,6 +108,7 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
         reasoning: lastReasoning || '(no reasoning given)',
         attempts: attempt,
         latencyMs: Date.now() - started,
+        finalAttemptMs,
         promptTokens,
         completionTokens,
         costUsd
@@ -120,6 +134,7 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
     fallbackReason: lastProblem,
     fatalReason,
     latencyMs: Date.now() - started,
+    finalAttemptMs,
     promptTokens,
     completionTokens,
     costUsd

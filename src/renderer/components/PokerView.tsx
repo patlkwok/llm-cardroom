@@ -1,5 +1,40 @@
-import type { PokerSeat, PokerState } from '../../shared/types.ts'
+import type { MatchSettings, PokerSeat, PokerState } from '../../shared/types.ts'
 import { CardRow, PlayingCard } from './PlayingCard.tsx'
+
+/** The felt before the first deal, so the seats are visible while setting up. */
+export function emptyPokerState(settings: MatchSettings): PokerState {
+  return {
+    kind: 'poker',
+    phase: 'idle',
+    handNumber: 0,
+    street: 'preflop',
+    board: [],
+    seats: settings.players.map((player, index) => ({
+      id: player.id,
+      name: player.name,
+      modelId: player.modelId,
+      seatIndex: index,
+      stack: settings.poker.startingStack,
+      cards: [],
+      cardsRevealed: false,
+      folded: false,
+      allIn: false,
+      committed: 0,
+      totalCommitted: 0,
+      busted: false,
+      wonThisHand: 0
+    })),
+    buttonIndex: 0,
+    actingSeatIndex: -1,
+    pot: 0,
+    currentBet: 0,
+    minRaiseIncrement: settings.poker.bigBlind,
+    smallBlind: settings.poker.smallBlind,
+    bigBlind: settings.poker.bigBlind,
+    sidePots: [],
+    handsPlayed: 0
+  }
+}
 
 interface Props {
   state: PokerState

@@ -12,8 +12,7 @@ import {
 } from '../shared/types.ts'
 import { SetupPanel } from './components/SetupPanel.tsx'
 import { ModelPicker } from './components/ModelPicker.tsx'
-import { BlackjackView } from './components/BlackjackView.tsx'
-import { PokerView } from './components/PokerView.tsx'
+import { GAME_VIEWS, roundNumberOf, seatedIdsOf } from './components/gameViews.tsx'
 import { FeedPanel } from './components/FeedPanel.tsx'
 
 const MAX_LOG = 600
@@ -147,14 +146,11 @@ export function App(): React.JSX.Element {
     }
   }
 
-  // Seats arrive at a round boundary in both games, so a just-added model is
-  // not yet seated and its setup stays editable until it is dealt in.
-  const seatedPlayerIds =
-    settings.game === 'poker'
-      ? (snapshot?.poker?.seats.map((seat) => seat.id) ?? [])
-      : (snapshot?.blackjack?.players.map((player) => player.id) ?? [])
-
+  // Seats arrive at a round boundary, so a just-added model is not yet seated
+  // and its setup stays editable until it is dealt in.
+  const seatedPlayerIds = seatedIdsOf(snapshot?.table)
   const activePlayers = settings.players
+  const GameView = GAME_VIEWS[settings.game]
 
   return (
     <div className="app">
@@ -190,17 +186,12 @@ export function App(): React.JSX.Element {
         <StatusBar status={status} snapshot={snapshot} settings={settings} />
 
         <div className="table-wrap">
-          {settings.game === 'blackjack' ? (
-            <BlackjackView
-              state={snapshot?.blackjack ?? emptyBlackjackState(settings)}
-              thinking={thinking}
-              rules={settings.blackjack}
-            />
+          {GameView ? (
+            <GameView snapshot={snapshot} settings={settings} thinking={thinking} />
           ) : (
-            <PokerView
-              state={snapshot?.poker ?? emptyPokerState(settings)}
-              thinking={thinking}
-            />
+            <div className="felt">
+              <div className="empty-hand">{GAMES[settings.game].label} is not playable yet.</div>
+            </div>
           )}
         </div>
       </main>
@@ -237,10 +228,7 @@ function StatusBar({
     error: 'Error'
   }
   const cost = snapshot?.stats.reduce((sum, s) => sum + s.costUsd, 0) ?? 0
-  const number =
-    settings.game === 'blackjack'
-      ? (snapshot?.blackjack?.roundNumber ?? 0)
-      : (snapshot?.poker?.handNumber ?? 0)
+  const number = roundNumberOf(snapshot?.table)
   const game = GAMES[settings.game]
   const counter = `${game.roundNoun.replace(/^./, (c) => c.toUpperCase())} ${number}`
 
@@ -253,72 +241,4 @@ function StatusBar({
       {snapshot?.errorText && <span className="status-error">{snapshot.errorText}</span>}
     </header>
   )
-}
-
-function emptyBlackjackState(settings: MatchSettings): NonNullable<MatchSnapshot['blackjack']> {
-  return {
-    phase: 'idle',
-    roundNumber: 0,
-    baseBet: settings.blackjack.baseBet,
-    shoeRemaining: settings.blackjack.deckCount * 52,
-    shoeJustShuffled: false,
-    players: settings.players.map((player, index) => ({
-      id: player.id,
-      name: player.name,
-      modelId: player.modelId,
-      seatIndex: index,
-      bankroll: settings.blackjack.startingBankroll,
-      hands: [],
-      activeHandIndex: 0,
-      insuranceOffer: 0,
-      insuranceBet: 0,
-      sessionNet: 0,
-      lastRoundNet: 0,
-      roundsPlayed: 0,
-      handsWon: 0,
-      handsLost: 0,
-      handsPushed: 0,
-      blackjacks: 0,
-      busts: 0,
-      busted: false
-    })),
-    activePlayerIndex: -1,
-    dealerCards: [],
-    dealerHoleHidden: true,
-    insuranceOffered: false,
-    roundsPlayed: 0
-  }
-}
-
-function emptyPokerState(settings: MatchSettings): NonNullable<MatchSnapshot['poker']> {
-  return {
-    phase: 'idle',
-    handNumber: 0,
-    street: 'preflop',
-    board: [],
-    seats: settings.players.map((player, index) => ({
-      id: player.id,
-      name: player.name,
-      modelId: player.modelId,
-      seatIndex: index,
-      stack: settings.poker.startingStack,
-      cards: [],
-      cardsRevealed: false,
-      folded: false,
-      allIn: false,
-      committed: 0,
-      totalCommitted: 0,
-      busted: false,
-      wonThisHand: 0
-    })),
-    buttonIndex: 0,
-    actingSeatIndex: -1,
-    pot: 0,
-    currentBet: 0,
-    minRaiseIncrement: settings.poker.bigBlind,
-    smallBlind: settings.poker.smallBlind,
-    bigBlind: settings.poker.bigBlind,
-    sidePots: [],
-    handsPlayed: 0
-  }
 }

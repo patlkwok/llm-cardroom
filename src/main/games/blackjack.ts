@@ -51,6 +51,7 @@ export class BlackjackTable {
     }
     this.shoe = new Shoe(rules.deckCount)
     this.state = {
+      kind: 'blackjack',
       phase: 'idle',
       roundNumber: 0,
       baseBet: rules.baseBet,

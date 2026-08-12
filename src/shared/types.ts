@@ -1,6 +1,9 @@
-import type { Card } from './cards.ts'
+import type { Card, Suit } from './cards.ts'
 
-export type GameKind = 'blackjack' | 'poker'
+export type GameKind = 'blackjack' | 'poker' | 'hearts' | 'twentyfour'
+
+/** Every game, in the order the setup panel offers them. */
+export const GAME_KINDS: GameKind[] = ['blackjack', 'poker', 'hearts', 'twentyfour']
 
 /**
  * What each game needs at the table. A per-game record rather than a pair of
@@ -9,15 +12,66 @@ export type GameKind = 'blackjack' | 'poker'
  */
 export interface GameDescriptor {
   label: string
+  /** Shortened for the game selector, where four buttons share one row. */
+  shortLabel: string
   minPlayers: number
   maxPlayers: number
   /** What one deal is called, for labels like "Stop after N rounds". */
   roundNoun: string
+  /**
+   * The roster locks at the first deal: no joining or leaving mid-match. Hearts
+   * is defined around four hands of thirteen cards, so it opts out of the
+   * reconciliation machinery both older games share rather than simply not
+   * opting in.
+   */
+  fixedRoster: boolean
+  /** Penalty scoring, where the *smallest* total wins. Hearts alone, so far. */
+  lowestWins: boolean
+  /** Every seat answers the same deal at once, so the round has no turns. */
+  simultaneous: boolean
 }
 
 export const GAMES: Record<GameKind, GameDescriptor> = {
-  blackjack: { label: 'Blackjack', minPlayers: 1, maxPlayers: 6, roundNoun: 'round' },
-  poker: { label: "No-Limit Hold'em", minPlayers: 2, maxPlayers: 8, roundNoun: 'hand' }
+  blackjack: {
+    label: 'Blackjack',
+    shortLabel: 'Blackjack',
+    minPlayers: 1,
+    maxPlayers: 6,
+    roundNoun: 'round',
+    fixedRoster: false,
+    lowestWins: false,
+    simultaneous: false
+  },
+  poker: {
+    label: "No-Limit Hold'em",
+    shortLabel: "Hold'em",
+    minPlayers: 2,
+    maxPlayers: 8,
+    roundNoun: 'hand',
+    fixedRoster: false,
+    lowestWins: false,
+    simultaneous: false
+  },
+  hearts: {
+    label: 'Hearts',
+    shortLabel: 'Hearts',
+    minPlayers: 4,
+    maxPlayers: 4,
+    roundNoun: 'hand',
+    fixedRoster: true,
+    lowestWins: true,
+    simultaneous: false
+  },
+  twentyfour: {
+    label: 'The 24 Puzzle',
+    shortLabel: '24',
+    minPlayers: 1,
+    maxPlayers: 6,
+    roundNoun: 'puzzle',
+    fixedRoster: false,
+    lowestWins: false,
+    simultaneous: true
+  }
 }
 
 /**
@@ -121,6 +175,7 @@ export interface BlackjackPlayer {
 }
 
 export interface BlackjackState {
+  kind: 'blackjack'
   phase: 'idle' | 'dealing' | 'insurance' | 'player' | 'dealer' | 'settled'
   roundNumber: number
   baseBet: number
@@ -197,6 +252,7 @@ export interface SidePot {
 }
 
 export interface PokerState {
+  kind: 'poker'
   phase: 'idle' | 'hand' | 'showdown' | 'complete'
   handNumber: number
   street: Street
@@ -225,6 +281,167 @@ export interface PokerRules {
   blindIncreaseEvery: number
 }
 
+/* ----------------------------------------------------------------- hearts */
+
+/** Where this hand's three cards go. Rotates, and every fourth hand is a hold. */
+export type PassDirection = 'left' | 'right' | 'across' | 'hold'
+
+export interface HeartsPlay {
+  seatIndex: number
+  seatId: string
+  card: Card
+}
+
+export interface HeartsTrick {
+  /** 1-based, so it reads the same in the log and the prompt. */
+  number: number
+  leadSuit: Suit
+  plays: HeartsPlay[]
+  /** Set once four cards are down. */
+  winnerSeatIndex?: number
+  winnerName?: string
+  /** Penalty points carried by the four cards. */
+  points: number
+}
+
+export interface HeartsPlayer {
+  id: string
+  name: string
+  modelId: string
+  seatIndex: number
+  /**
+   * Cards still held. The spectator sees every hand, exactly as at poker — and
+   * exactly as at poker, a model's prompt only ever renders its own.
+   */
+  hand: Card[]
+  /** Running match total. **Lowest wins**, unlike every other game here. */
+  totalScore: number
+  /** Penalty points taken so far this hand, and in the hand just scored. */
+  handScore: number
+  lastHandScore: number
+  tricksWon: number
+  /** Hands where this seat took all 26. */
+  moonShots: number
+  /** This hand's exchange, for the spectator. Empty on a hold hand. */
+  passedCards: Card[]
+  receivedCards: Card[]
+}
+
+export interface HeartsState {
+  kind: 'hearts'
+  phase: 'idle' | 'passing' | 'playing' | 'handComplete' | 'complete'
+  handNumber: number
+  handsPlayed: number
+  passDirection: PassDirection
+  players: HeartsPlayer[]
+  /** The trick being played, or null between tricks. */
+  currentTrick: HeartsTrick | null
+  /** Kept on the felt after it is gathered, so the operator can read it. */
+  lastTrick: HeartsTrick | null
+  /** 1-based; 13 tricks to a hand, always. */
+  trickNumber: number
+  leadSeatIndex: number
+  /** Seat whose turn it is, or -1 between plays. */
+  actingSeatIndex: number
+  /** A heart has actually been played, so hearts may now be led. */
+  heartsBroken: boolean
+  /** Whether the queen of spades has gone. She does *not* break hearts. */
+  queenPlayed: boolean
+  lastHandSummary?: string
+  winnerName?: string
+  /**
+   * Plays made without asking a model, because only one card was legal. Worth
+   * counting: it is how much of a trick-taking match comes free.
+   */
+  forcedPlays: number
+  /** Total plays made, forced ones included, for the forced-play rate. */
+  totalPlays: number
+}
+
+export interface HeartsRules {
+  /** The match ends once any seat reaches this. Traditionally 100. */
+  targetScore: number
+}
+
+/* ------------------------------------------------------------ 24 puzzle */
+
+export type TwentyFourVerdict =
+  /** Made 24, or correctly reported that the deal cannot. */
+  | 'correct'
+  /** A well-formed expression that does not make 24, or a wrong "no solution". */
+  | 'wrong'
+  /** Unparseable, used the wrong cards, or divided by zero. */
+  | 'invalid'
+  /** The model never answered at all. */
+  | 'none'
+
+export interface TwentyFourResult {
+  playerId: string
+  playerName: string
+  /** The expression given, or null when the model claimed no solution. */
+  expression: string | null
+  verdict: TwentyFourVerdict
+  /** What the expression actually came to, exactly — e.g. "22" or "71/3". */
+  valueLabel?: string
+  /** Why an invalid answer was rejected. */
+  problem?: string
+  /**
+   * How long the model took to answer, in milliseconds. This is the *answering*
+   * attempt only: retry time is excluded, so a rate-limited model does not lose
+   * the round for reasons that have nothing to do with the puzzle.
+   */
+  elapsedMs: number
+  /** 1 = fastest correct answer, 2 = next, and so on. 0 when not correct. */
+  rank: number
+  won: boolean
+}
+
+export interface TwentyFourPlayer {
+  id: string
+  name: string
+  modelId: string
+  seatIndex: number
+  /** Rounds won, which is what the match is played for. */
+  score: number
+  solved: number
+  /** Solvable deals this seat failed to solve. */
+  missed: number
+  wrong: number
+  invalid: number
+  roundsPlayed: number
+  /** Every answering time, so the stats bar can report a median. */
+  latencies: number[]
+  lastResult?: TwentyFourResult
+}
+
+export interface TwentyFourState {
+  kind: 'twentyfour'
+  phase: 'idle' | 'dealing' | 'answering' | 'settled' | 'complete'
+  roundNumber: number
+  roundsPlayed: number
+  cards: Card[]
+  /** Whether the deal can actually be made into 24. Unsolvable deals are dealt
+   * on purpose: "no solution" is a legal answer, and it is the only version of
+   * the game that catches a model bluffing an expression that does not
+   * evaluate. */
+  solvable: boolean
+  /**
+   * One worked answer, or null when there is none. **Spectator only** — like
+   * poker equity, it must never reach a prompt.
+   */
+  solution: string | null
+  players: TwentyFourPlayer[]
+  /** This round's answers, in finishing order. */
+  results: TwentyFourResult[]
+  lastRoundSummary?: string
+  winnerName?: string
+}
+
+export interface TwentyFourRules {
+  /** First seat to this many round wins takes the match; 0 runs until stopped. */
+  targetScore: number
+}
+
 /* ------------------------------------------------------------- match/events */
 
 export interface MatchSettings {
@@ -238,6 +455,8 @@ export interface MatchSettings {
   benched?: Partial<Record<GameKind, PlayerConfig[]>>
   blackjack: BlackjackRules
   poker: PokerRules
+  hearts: HeartsRules
+  twentyfour: TwentyFourRules
   /** Milliseconds to pause between visible steps so a human can follow along. */
   stepDelayMs: number
   /**
@@ -292,15 +511,37 @@ export interface PlayerStats {
 
 export type MatchStatus = 'idle' | 'running' | 'paused' | 'stopping' | 'finished' | 'error'
 
+/**
+ * Whatever is on the felt, discriminated by `kind`. This used to be one optional
+ * field per game on the snapshot, which at four games would have been four
+ * optional fields where exactly one is ever set — and nothing in the type
+ * stopped a caller reading the wrong one.
+ */
+export type TableState = BlackjackState | PokerState | HeartsState | TwentyFourState
+
 export interface MatchSnapshot {
   status: MatchStatus
   game: GameKind
-  blackjack?: BlackjackState
-  poker?: PokerState
+  /** Null before the first deal, and only then. */
+  table: TableState | null
   players: PlayerConfig[]
   stats: PlayerStats[]
   /** Set when status is 'error'. */
   errorText?: string
+}
+
+/**
+ * The table state, but only if it belongs to the game asked for. Saves every
+ * caller writing the same `table?.kind === 'poker' ? table : undefined` dance,
+ * and makes reading the wrong game's state impossible rather than merely
+ * unlikely.
+ */
+export function tableOf<K extends GameKind>(
+  snapshot: MatchSnapshot | null | undefined,
+  kind: K
+): Extract<TableState, { kind: K }> | undefined {
+  const table = snapshot?.table
+  return table?.kind === kind ? (table as Extract<TableState, { kind: K }>) : undefined
 }
 
 export type MatchEvent =
@@ -336,6 +577,14 @@ export const DEFAULT_POKER_RULES: PokerRules = {
   blindIncreaseEvery: 0
 }
 
+export const DEFAULT_HEARTS_RULES: HeartsRules = {
+  targetScore: 100
+}
+
+export const DEFAULT_TWENTYFOUR_RULES: TwentyFourRules = {
+  targetScore: 10
+}
+
 export function defaultSettings(): MatchSettings {
   return {
     game: 'blackjack',
@@ -343,6 +592,8 @@ export function defaultSettings(): MatchSettings {
     benched: {},
     blackjack: { ...DEFAULT_BLACKJACK_RULES },
     poker: { ...DEFAULT_POKER_RULES },
+    hearts: { ...DEFAULT_HEARTS_RULES },
+    twentyfour: { ...DEFAULT_TWENTYFOUR_RULES },
     stepDelayMs: 900,
     showEquity: true,
     maxRounds: 0

@@ -3,9 +3,47 @@ import type {
   BlackjackHand,
   BlackjackPlayer,
   BlackjackRules,
-  BlackjackState
+  BlackjackState,
+  MatchSettings
 } from '../../shared/types.ts'
 import { CardRow } from './PlayingCard.tsx'
+
+/** The felt before the first deal, so the seats are visible while setting up. */
+export function emptyBlackjackState(settings: MatchSettings): BlackjackState {
+  return {
+    kind: 'blackjack',
+    phase: 'idle',
+    roundNumber: 0,
+    baseBet: settings.blackjack.baseBet,
+    shoeRemaining: settings.blackjack.deckCount * 52,
+    shoeJustShuffled: false,
+    players: settings.players.map((player, index) => ({
+      id: player.id,
+      name: player.name,
+      modelId: player.modelId,
+      seatIndex: index,
+      bankroll: settings.blackjack.startingBankroll,
+      hands: [],
+      activeHandIndex: 0,
+      insuranceOffer: 0,
+      insuranceBet: 0,
+      sessionNet: 0,
+      lastRoundNet: 0,
+      roundsPlayed: 0,
+      handsWon: 0,
+      handsLost: 0,
+      handsPushed: 0,
+      blackjacks: 0,
+      busts: 0,
+      busted: false
+    })),
+    activePlayerIndex: -1,
+    dealerCards: [],
+    dealerHoleHidden: true,
+    insuranceOffered: false,
+    roundsPlayed: 0
+  }
+}
 
 interface Props {
   state: BlackjackState

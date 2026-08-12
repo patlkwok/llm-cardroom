@@ -71,6 +71,7 @@ export class PokerTable {
       throw new Error(`poker needs 2-8 players, got ${seeds.length}`)
     }
     this.state = {
+      kind: 'poker',
       phase: 'idle',
       handNumber: 0,
       street: 'preflop',

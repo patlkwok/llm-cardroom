@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { handEquity } from '../src/main/games/poker/equity.ts'
 import { PokerTable } from '../src/main/games/poker/engine.ts'
-import { buildPokerPrompt } from '../src/main/games/prompts.ts'
+import { buildPokerPrompt } from '../src/main/games/prompts/poker.ts'
 import type { Card, Rank, Suit } from '../src/shared/cards.ts'
 import type { PokerRules } from '../src/shared/types.ts'
 
