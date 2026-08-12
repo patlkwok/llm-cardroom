@@ -218,7 +218,9 @@ export class BlackjackTable {
         break
       }
       case 'double': {
-        s.bankroll -= hand.bet
+        // Matching the original stake: startRound already took the first one,
+        // so the hand now risks two and hand.bet reflects the total at stake.
+        s.bankroll = chips(s.bankroll - hand.bet)
         hand.bet *= 2
         hand.cards.push(this.shoe.draw())
         hand.status = handValue(hand.cards).total > 21 ? 'busted' : 'doubled'
@@ -229,7 +231,7 @@ export class BlackjackTable {
         const moved = hand.cards.pop() as Card
         const splitAces = hand.cards[0].rank === 14
         const bet = hand.bet
-        s.bankroll -= bet
+        s.bankroll = chips(s.bankroll - bet)
 
         hand.splitDepth++
         hand.fromSplitAces = splitAces

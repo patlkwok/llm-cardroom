@@ -428,3 +428,127 @@ test('raise amounts are clamped into the legal band', () => {
   table.applyAction({ kind: 'raise', amount: 999_999 })
   assert.equal(table.state.currentBet, legal2.maxRaiseTo)
 })
+
+/* ------------------------------------------------ betting-rule regressions */
+
+test('an undersized all-in still requires the others to call', () => {
+  const table = makeTable(3)
+  // Seat 2 can shove 140 over a raise to 100: an increment of 40 against a
+  // minimum of 90, so it does not reopen raising.
+  table.state.seats[2].stack = 140
+  table.startHand()
+
+  const asked: string[] = []
+  let cappedSawRaise = false
+  for (let guard = 0; guard < 40; guard++) {
+    const step = table.step()
+    if (step.kind !== 'await') break
+    const seat = table.state.seats[step.seatIndex]
+    asked.push(seat.id)
+
+    if (seat.id === 'p1' && seat.totalCommitted < 100) {
+      table.applyAction({ kind: 'raise', amount: 100 })
+    } else if (seat.id === 'p2') {
+      table.applyAction({ kind: 'raise', amount: 140 })
+    } else if (seat.id === 'p1') {
+      // p1 is facing the undersized all-in: must call or fold, may not raise.
+      if (table.legalActions().canRaise) cappedSawRaise = true
+      table.applyAction({ kind: 'call' })
+    } else {
+      table.applyAction({ kind: 'fold' })
+    }
+  }
+
+  const p1 = table.state.seats[1]
+  const p2 = table.state.seats[2]
+  assert.equal(asked.filter((id) => id === 'p1').length, 2, 'the raiser must act again')
+  assert.equal(p1.totalCommitted, p2.totalCommitted, 'and must match the all-in to stay in')
+  assert.equal(cappedSawRaise, false, 'an undersized all-in must not reopen raising')
+})
+
+test('a short big blind does not lower the price for everyone else', () => {
+  const table = makeTable(3)
+  table.state.seats[0].stack = 8 // seat 0 is the big blind in the first hand
+  table.startHand()
+
+  assert.equal(table.state.seats[0].committed, 8, 'posts only what it has')
+  assert.equal(table.state.currentBet, table.state.bigBlind, 'but the bet level is the full blind')
+
+  const step = table.step()
+  assert.equal(step.kind, 'await')
+  assert.equal(table.legalActions().callAmount, table.state.bigBlind)
+})
+
+test('removing the button holder does not skip the next player', () => {
+  for (let button = 0; button < 3; button++) {
+    const table = makeTable(3)
+    table.state.buttonIndex = button
+    const dueNext = table.state.seats[(button + 1) % 3].id
+
+    table.removeSeat(table.state.seats[button].id)
+
+    const seats = table.state.seats
+    const next = seats[(table.state.buttonIndex + 1) % seats.length]
+    assert.equal(next.id, dueNext, `button at ${button}: ${dueNext} was due the button next`)
+  }
+})
+
+test('the whole pot reaches a winner when everyone folds to a raise', () => {
+  const table = makeTable(3)
+  const before = totalChips(table)
+  table.startHand()
+
+  for (let guard = 0; guard < 20; guard++) {
+    const step = table.step()
+    if (step.kind !== 'await') break
+    const seat = table.state.seats[step.seatIndex]
+    if (seat.id === 'p1' && seat.totalCommitted < 200 && table.legalActions().canRaise) {
+      table.applyAction({ kind: 'raise', amount: 200 })
+    } else {
+      table.applyAction({ kind: 'fold' })
+    }
+  }
+  while (table.step().kind !== 'handComplete') { /* drain */ }
+
+  assert.equal(totalChips(table), before, 'no chips may be created or destroyed')
+  assert.equal(table.state.seats[1].stack, 1015, 'the raiser gets its bet back plus the blinds')
+})
+
+test('chips survive players who fold when checking was free', () => {
+  // The other conservation test never folds for free, which is exactly the line
+  // that can strand a pot layer with nobody eligible for it. Fold aggressively
+  // here, including when there is nothing to call.
+  // Fresh tables so the run keeps covering multi-way pots instead of collapsing
+  // to a heads-up match after the first few bust-outs.
+  let hands = 0
+  for (let round = 0; round < 60; round++) {
+    const table = makeTable(4, { startingStack: 400 })
+    const before = totalChips(table)
+
+    for (let hand = 0; hand < 40 && !table.isMatchOver; hand++) {
+      table.startHand()
+      for (let guard = 0; guard < 200; guard++) {
+        const step = table.step()
+        if (step.kind === 'handComplete') break
+        if (step.kind !== 'await') continue
+
+        const legal = table.legalActions()
+        const roll = Math.random()
+        if (roll < 0.25) {
+          table.applyAction({ kind: 'fold' })
+        } else if (legal.canRaise && roll < 0.45) {
+          const span = legal.maxRaiseTo - legal.minRaiseTo
+          table.applyAction({ kind: 'raise', amount: legal.minRaiseTo + Math.floor(Math.random() * (span + 1)) })
+        } else if (legal.canCheck) {
+          table.applyAction({ kind: 'check' })
+        } else {
+          table.applyAction({ kind: 'call' })
+        }
+      }
+      hands++
+      assert.equal(totalChips(table), before, `chips changed in table ${round + 1} hand ${hand + 1}`)
+      assert.equal(table.state.pot, 0, `pot not fully awarded in table ${round + 1} hand ${hand + 1}`)
+    }
+  }
+  assert.ok(hands > 400, `expected a meaningful sample, played ${hands} hands`)
+})

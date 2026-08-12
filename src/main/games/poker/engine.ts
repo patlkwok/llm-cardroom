@@ -53,6 +53,12 @@ export class PokerTable {
   private deck: Card[] = []
   /** Seats that still owe an action on the current street. */
   private needsToAct = new Set<number>()
+  /**
+   * Seats that must call or fold but may not raise, because the only thing
+   * facing them is an all-in for less than a full raise. Cleared whenever a
+   * full raise reopens the betting, and at every street.
+   */
+  private cappedSeats = new Set<number>()
   /** The seat *before* the next one to act; searching starts from here. */
   private actionAnchor = 0
   private handOver = false
@@ -180,6 +186,7 @@ export class PokerTable {
     this.needsToAct = new Set(
       s.seats.filter((seat) => this.canAct(seat)).map((seat) => seat.seatIndex)
     )
+    this.cappedSeats.clear()
     // Preflop action opens to the left of the big blind.
     this.actionAnchor = bbIndex
     s.actingSeatIndex = -1
@@ -193,7 +200,9 @@ export class PokerTable {
     seat.totalCommitted += posted
     this.state.pot += posted
     if (seat.stack === 0) seat.allIn = true
-    this.state.currentBet = Math.max(this.state.currentBet, seat.committed)
+    // The bet level is the nominal blind, not what was actually posted: a blind
+    // who is all-in for less does not make the hand cheaper for everyone else.
+    this.state.currentBet = Math.max(this.state.currentBet, amount)
     seat.lastActionLabel = amount === this.state.smallBlind ? 'SB' : 'BB'
   }
 
@@ -239,7 +248,7 @@ export class PokerTable {
       canCall: !canCheck && toCall > 0,
       callAmount: toCall,
       callIsAllIn: !canCheck && toCall >= seat.stack,
-      canRaise: maxRaiseTo > s.currentBet,
+      canRaise: maxRaiseTo > s.currentBet && !this.cappedSeats.has(seat.seatIndex),
       minRaiseTo,
       maxRaiseTo
     }
@@ -281,17 +290,31 @@ export class PokerTable {
         const wasOpen = s.currentBet === 0
 
         this.commit(seat, raiseTo - seat.committed)
+        s.currentBet = Math.max(s.currentBet, seat.committed)
 
-        // An undersized all-in does not reopen betting for players who already acted.
         if (increment >= s.minRaiseIncrement) {
+          // A full raise reopens the betting: everyone else owes an action
+          // again, and may raise.
           s.minRaiseIncrement = increment
+          this.cappedSeats.clear()
           for (const other of s.seats) {
             if (other.seatIndex !== seat.seatIndex && this.canAct(other)) {
               this.needsToAct.add(other.seatIndex)
             }
           }
+        } else {
+          // An all-in for less than a full raise does not reopen *raising*, but
+          // players who have not matched it still owe a call or a fold. Treating
+          // "cannot re-raise" as "need not act" let them reach showdown having
+          // paid less than everyone else.
+          for (const other of s.seats) {
+            if (other.seatIndex === seat.seatIndex || !this.canAct(other)) continue
+            if (other.committed >= s.currentBet) continue
+            // Already acted this street, so they are capped to call-or-fold.
+            if (!this.needsToAct.has(other.seatIndex)) this.cappedSeats.add(other.seatIndex)
+            this.needsToAct.add(other.seatIndex)
+          }
         }
-        s.currentBet = Math.max(s.currentBet, seat.committed)
 
         const verb = wasOpen ? 'bets' : 'raises to'
         label = seat.allIn ? `${verb} ${raiseTo} (all-in)` : `${verb} ${raiseTo}`
@@ -384,6 +407,7 @@ export class PokerTable {
     // With at most one player able to act, the rest of the board runs out with
     // no further betting.
     this.needsToAct = actors.length >= 2 ? new Set(actors.map((seat) => seat.seatIndex)) : new Set()
+    this.cappedSeats.clear()
     // Postflop action opens to the left of the button.
     this.actionAnchor = s.buttonIndex
 
@@ -408,7 +432,18 @@ export class PokerTable {
       const eligible = s.seats
         .filter((seat) => !seat.folded && seat.totalCommitted >= level)
         .map((seat) => seat.id)
-      if (amount > 0 && eligible.length > 0) pots.push({ amount, eligibleSeatIds: eligible })
+
+      if (amount > 0) {
+        if (eligible.length > 0) {
+          pots.push({ amount, eligibleSeatIds: eligible })
+        } else if (pots.length > 0) {
+          // Only folded players reached this level, so nobody is eligible for a
+          // pot of its own. These are dead chips: they belong to the layer
+          // below, whose winner takes them. Dropping the layer — as this used
+          // to — destroyed the chips outright.
+          pots[pots.length - 1].amount += amount
+        }
+      }
       previous = level
     }
 
@@ -549,11 +584,16 @@ export class PokerTable {
     })
     if (s.seats.length === 0) {
       s.buttonIndex = 0
-    } else if (s.buttonIndex >= s.seats.length) {
-      s.buttonIndex = s.seats.length - 1
-    } else if (index <= s.buttonIndex && s.buttonIndex > 0) {
+    } else if (index < s.buttonIndex) {
       // Keep the button on the same player when someone ahead of it leaves.
       s.buttonIndex--
+    } else if (index === s.buttonIndex) {
+      // The button holder left. Step back one so the next hand advances onto
+      // the player who was due it next; at seat 0 that wraps to the last seat,
+      // which the old `buttonIndex > 0` guard got wrong by skipping a player.
+      s.buttonIndex = (index - 1 + s.seats.length) % s.seats.length
+    } else if (s.buttonIndex >= s.seats.length) {
+      s.buttonIndex = s.seats.length - 1
     }
     s.actingSeatIndex = -1
     return true
