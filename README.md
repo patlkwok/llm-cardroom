@@ -4,10 +4,15 @@ A desktop app for watching language models play cards. Seat models from the
 OpenRouter catalogue at a table, press deal, and watch them play — every move
 annotated with the model's own reasoning.
 
-Two games:
+Four games:
 
-- **Blackjack** — one model plays against the house dealer.
+- **Blackjack** — one to six models play the house dealer, sharing a single
+  shoe, so they face the same cards in the same rounds.
 - **No-Limit Texas Hold'em** — two to eight models play against each other.
+- **Hearts** — exactly four models pass three cards and play thirteen tricks,
+  dodging hearts and the queen of spades. Lowest score wins.
+- **The 24 puzzle** — up to six models race the same four cards to 24, all
+  answering at once.
 
 ## Running it
 
@@ -67,7 +72,8 @@ claiming the key is encrypted.
 2. Pick a game.
 3. **Add model** opens the OpenRouter catalogue — search by name or id, and the
    list shows the context window and the price per million tokens. Blackjack
-   seats one model; Hold'em seats two to eight.
+   seats one to six, Hold'em two to eight, the 24 puzzle up to six, and Hearts
+   exactly four.
 4. Adjust the table rules and the pace, then **Deal me in**.
 
 Expanding a seated player exposes its **reasoning effort**: `Model's default`
@@ -81,8 +87,8 @@ tokens count against the response budget, the app raises `max_tokens` with the
 effort level (900 → 12,000) so a thinking model cannot exhaust its budget
 before it answers.
 
-Each game keeps its own roster, so switching between Blackjack and Hold'em does
-not lose the other table's line-up within a session.
+Each game keeps its own roster, so switching between games does not lose the
+other tables' line-ups within a session.
 
 **Every launch starts from a clean table.** The API key is the only thing kept
 between runs — models, rules and pace all return to their defaults, so a
@@ -119,11 +125,15 @@ match is running. A new stake applies from the **next** round — a hand already
 dealt always settles for the amount it was wagered for — and the change is
 noted in the table log.
 
-At a poker table you can also **add or remove models mid-match**. Both take
-effect at the next hand boundary, never mid-hand: a player who joins buys in
-for the starting stack, and a player who leaves takes their chips with them.
-Drop below two players and the table closes. The table log records each
-arrival and departure.
+At blackjack, poker and the 24 puzzle you can also **add or remove models
+mid-match**. Both take effect at the next round boundary, never mid-hand: a
+player who joins buys in for the starting stack, and a player who leaves takes
+their chips with them. Drop below two players at poker and the table closes. The
+table log records each arrival and departure.
+
+**Hearts is the exception**: it is defined around four hands of thirteen cards,
+so its table locks at the first deal and nobody joins or leaves for the rest of
+the match.
 
 Adding a model **pauses the table** so you can set it up before it is dealt in.
 A model waiting to join is marked *joins next hand* and its reasoning effort
@@ -209,19 +219,54 @@ side-pot construction for all-in players, undersized all-in raises that do not
 reopen the betting, odd chips awarded to the first seat left of the button, and
 seven-card hand evaluation with proper kicker comparison.
 
+**Hearts** — hearts score 1 each and the queen of spades 13, lowest total wins,
+game to 100. Deal thirteen; pass three left, right, across, then hold. The two
+of clubs leads, no points may be played on the first trick, and hearts may not
+be *led* until one has been played. **The queen of spades does not break
+hearts** — only an actual heart does, which is the rule most often disputed, so
+it is stated explicitly in the system prompt. Shooting the moon scores 26 to
+everybody else rather than −26 to the shooter.
+
+When only one card is legal it is played **without asking a model at all**: it
+removes a paid call and, more usefully, a failure surface, since asking a model
+to choose from one option can still burn three retries on a move that was never
+in doubt. Across a full match about a quarter of plays are forced, and the felt
+reports the running count.
+
+**The 24 puzzle** — four cards combined with `+ − × ÷` and brackets to make 24,
+with ace = 1, jack = 11, queen = 12, king = 13. Every card is used exactly once
+and division is exact rather than rounded, so `8/(3−8/3) = 24` is a valid answer
+— it is evaluated in exact fractions, because in floating point it is not quite
+24. Expressions are parsed, never `eval`'d.
+
+Unsolvable deals are dealt **on purpose**, and "no solution" is a legal answer
+graded against the app's own solver. That is the whole point: it is the only
+version of the game that catches a model inventing an expression that does not
+evaluate. About three quarters of four-card deals can be made into 24.
+
+Every seat answers at once, and the round goes to the fastest correct answer —
+timed on the model's own answering attempt, so a retry after rate limiting is
+not counted against it. Since arrival order otherwise measures throughput rather
+than skill, the two numbers actually worth reading are on the felt: **solve
+rate** and **median time**.
+
 ## Tests
 
 ```bash
 npm test
 ```
 
-110 tests covering hand evaluation, betting order, side pots, chip conservation
-across randomised hands (including players who fold when checking was free) and
-repeated roster churn, undersized all-in raises, short blinds, blackjack settlement,
-insurance payouts, bankroll accounting, stake changes landing on the right
-round, plus end-to-end runs of both games against a mocked OpenRouter —
-including a model that only ever returns garbage, to prove the fallback path
-keeps play moving.
+190 tests. The load-bearing ones are invariants rather than examples: chip
+conservation across randomised poker hands and repeated roster churn, per-seat
+bankroll accounting at blackjack, card conservation on the shoe, 52 cards and
+exactly 26 points conserved through every hearts hand, and exact-rational
+arithmetic for the 24 puzzle checked against an independently written solver.
+
+Rule *rejections* are asserted as well as rule successes — the hearts engine
+must refuse an off-suit card while the led suit is held, and the expression
+parser must refuse everything that is not arithmetic. Both games run end to end
+against a mocked OpenRouter, including a model that only ever returns garbage,
+to prove the fallback path keeps play moving.
 
 ## Layout
 
@@ -233,8 +278,12 @@ src/
     games/
       blackjack.ts    blackjack engine
       poker/          hold'em engine, 7-card evaluator, win-probability
-      prompts.ts      prompt construction and reply parsing
+      hearts/         trick engine: passing, legality, trick and hand scoring
+      twentyfour/     expression parser, exact rationals, brute-force solver
+      prompts/        prompt construction and reply parsing, one file per game
+      drivers/        one per game: the rules of play, behind a GameDriver
       agent.ts        one decision, with retries and a fallback
+      driver.ts       the GameDriver seam and what a driver may reach for
       runner.ts       drives a match, emits events to the UI
   preload/            context-isolated IPC bridge
   renderer/           React UI
@@ -251,8 +300,9 @@ scripts/
 npm run build && npm run screenshot   # -> screenshots/*.png
 ```
 
-Launches the real app with an isolated profile and a mocked OpenRouter, plays a
-blackjack round and a few poker hands, and photographs each view. CI runs it on
+Launches the real app with an isolated profile and a mocked OpenRouter, plays
+each game and photographs it — deliberately at a full table and a small window,
+because those are the arrangements that break layouts. CI runs it on
 all three platforms and uploads the results, which is the only practical way to
 catch layout breakage on an OS you do not have — font metrics differ per
 platform, and several bugs here (clipped seats, an overlapping stats bar) were

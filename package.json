@@ -1,8 +1,8 @@
 {
   "name": "llm-cardroom",
   "productName": "LLM Cardroom",
-  "version": "1.2.0",
-  "description": "Watch LLMs play Blackjack and No-Limit Texas Hold'em",
+  "version": "2.0.0",
+  "description": "Watch LLMs play Blackjack, No-Limit Texas Hold'em, Hearts and the 24 puzzle",
   "main": "./out/main/index.js",
   "author": "llm-cardroom",
   "license": "MIT",
