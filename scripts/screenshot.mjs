@@ -72,9 +72,17 @@ function installOpenRouterMock() {
       // Insurance is a separate decision with its own reply shape. Answering it
       // with an `action` fails parsing three times and lands on a fallback,
       // which then shows up in the screenshots as if the app had misbehaved.
-      const answer = body.includes('Do you take insurance?')
-        ? { insurance: false }
-        : { action: globalThis.__mockAction }
+      let answer = { action: globalThis.__mockAction }
+      if (body.includes('Do you take insurance?')) {
+        answer = { insurance: false }
+      } else if (globalThis.__mockPrefer) {
+        // Take the first preferred action the prompt actually offers, so a
+        // capture can steer the table towards a state — a split, say — without
+        // ever answering illegally and landing on a fallback.
+        const legal = (body.match(/Legal actions: ([^"\\]*)/) || ['', ''])[1]
+        const choice = globalThis.__mockPrefer.find((a) => legal.includes(a))
+        if (choice) answer = { action: choice }
+      }
 
       const reply = JSON.stringify({
         reasoning:
@@ -117,20 +125,42 @@ async function main() {
     await win.click('button:has-text("Save key")')
     await win.waitForSelector('.badge-ok', { timeout: 15000 })
 
-    // Slowest pace would make the capture wait for nothing.
-    await win.fill('input[type="range"]', '100')
-
-    await seatModel(win, 0)
+    // A full table of six on one shoe. The crowded case is the one worth
+    // photographing every run: it is where seat plates, names and card rows all
+    // have to shrink to fit, and a four-seat frame would never show that.
+    for (let i = 0; i < 6; i++) await seatModel(win, i)
     await win.waitForTimeout(400)
     await shoot(win, '01-setup-blackjack.png')
 
     // --- a blackjack round ------------------------------------------------
+    // Slow enough that the settled felt lingers long enough to catch. Waiting
+    // for the state rather than sleeping is what makes this reliable: a fixed
+    // delay used to land mid-deal and never photograph an outcome.
+    await win.fill('input[type="range"]', '700')
     await win.click('.start-button')
     await waitForCounter(win, /Round [1-9]/)
-    // Let a round actually settle so the felt shows a result, not a half-deal.
-    await win.waitForTimeout(4000)
+    await win.waitForSelector('.hand-outcome', { timeout: 120000 })
     await shoot(win, '02-blackjack-round.png')
+
+    // A split at a full table is the worst case for the felt: it puts an extra
+    // hand on a row that already holds six, and the hands stack because there
+    // is no width for them side by side. That used to grow the column past the
+    // bottom of the window and take the stats bar with it.
+    //
+    // Captured at a deliberately SHORT viewport, because height is what breaks:
+    // at 940px the overflow simply does not happen and the frame proves
+    // nothing. 700px is roughly the smallest window worth supporting.
+    await win.setViewportSize({ width: 1360, height: 700 })
+    await app.evaluate(() => {
+      globalThis.__mockPrefer = ['split', 'stand']
+    })
+    await win.waitForSelector('.hand-index', { timeout: 180000 })
+    await shoot(win, '03-blackjack-split.png')
     await stopMatch(win)
+    await app.evaluate(() => {
+      globalThis.__mockPrefer = undefined
+    })
+    await win.setViewportSize({ width: 1440, height: 940 })
 
     // --- a poker table ----------------------------------------------------
     await app.evaluate(() => {
@@ -153,10 +183,10 @@ async function main() {
     // Two frames, because the seat plates show different things: win
     // probability while the hand is live, stack depth at showdown.
     await win.waitForSelector('.seat-equity', { timeout: 90000 })
-    await shoot(win, '03-poker-hand.png')
+    await shoot(win, '04-poker-hand.png')
 
     await win.waitForSelector('.seat-showdown', { timeout: 120000 })
-    await shoot(win, '04-poker-showdown.png')
+    await shoot(win, '05-poker-showdown.png')
     await stopMatch(win)
 
     console.log(`\nScreenshots written to ${OUT_DIR}`)

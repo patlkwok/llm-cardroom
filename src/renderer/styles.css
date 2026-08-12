@@ -605,6 +605,9 @@ button:disabled {
   gap: 5px;
   align-items: center;
   justify-content: center;
+  /* A long hit sequence in a narrow blackjack seat wraps rather than
+     overflowing the felt. */
+  flex-wrap: wrap;
 }
 
 .card {
@@ -725,6 +728,12 @@ button:disabled {
 
 /* -------------------------------------------------------------- blackjack */
 
+/* A row of seats reaches higher up the felt than one player's hands did, so
+   the watermark sits above where the tallest hand box can start. */
+.felt-blackjack .felt-brand {
+  top: 34%;
+}
+
 .felt-blackjack {
   display: flex;
   flex-direction: column;
@@ -734,19 +743,93 @@ button:disabled {
   gap: 12px;
 }
 
-.bj-dealer,
-.bj-player {
+.bj-dealer {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
+  flex: none;
   z-index: 1;
+}
+
+/* One row of seats facing the dealer. Every seat may shrink below its content
+   so six of them still fit; the names ellipsise rather than clipping.
+   `min-height: 0` with `flex: 1 1 auto` is what stops a tall row (six seats,
+   one of them split) growing the column past the felt and shoving the stats
+   bar off the bottom of the window. Overflow is clipped at the *top*, against
+   the watermark, so the plates, bets and stats bar all survive. */
+.bj-seats {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.bj-seat {
+  /* flex-grow and max-width are set inline, in proportion to the number of
+     hands: a split seat takes the width of two, side by side. */
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 6px 6px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.bj-seat-acting {
+  border-color: rgba(212, 175, 87, 0.55);
+  background: rgba(212, 175, 87, 0.07);
+}
+
+.bj-seat-winner {
+  border-color: rgba(63, 185, 80, 0.4);
+  background: rgba(63, 185, 80, 0.07);
+}
+
+.bj-seat-out {
+  opacity: 0.5;
+}
+
+/* Wraps rather than truncating: a 3:2 payout leaves halves, so a net can be
+   "-112.5" — five characters wider than the seat at a full table, which
+   clipped it to "-37." instead of dropping it onto its own line. */
+.bj-seat-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  max-width: 100%;
+}
+
+.bj-net {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.bj-idle {
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 11px;
+  font-style: italic;
+  padding: 22px 0;
 }
 
 .seat-label {
   display: flex;
   align-items: center;
   gap: 9px;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .seat-name {
@@ -755,6 +838,23 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+}
+
+/* text-overflow is ignored on a flex container, so the text needs its own
+   element and both need min-width: 0 to shrink below their content. */
+.bj-seat .seat-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.bj-seat .seat-model {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .seat-model {
@@ -776,18 +876,35 @@ button:disabled {
   border-color: rgba(212, 175, 87, 0.45);
 }
 
+/* Split hands sit side by side and only wrap when the seat genuinely cannot
+   hold them, which keeps the row one hand tall in every ordinary case. */
 .bj-hands {
   display: flex;
-  gap: 14px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: center;
+  align-items: flex-end;
+  min-width: 0;
+}
+
+/* A split seat is granted the width of two. Trimming the padding is what makes
+   two boxes actually fit across at three or four seats; at six there is no
+   width for it either way and they stack, which the felt now has room for. */
+.bj-seat-split .bj-hands {
+  gap: 5px;
+}
+
+.bj-seat-split .hand-box {
+  padding: 6px 5px;
+  gap: 5px;
 }
 
 .hand-box {
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid transparent;
   border-radius: 10px;
-  padding: 9px 11px;
+  padding: 8px 9px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;

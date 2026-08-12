@@ -3,6 +3,24 @@ import type { Card } from './cards.ts'
 export type GameKind = 'blackjack' | 'poker'
 
 /**
+ * What each game needs at the table. A per-game record rather than a pair of
+ * ternaries: the UI asked "is this poker?" in a dozen places, which stopped
+ * scaling the moment blackjack also seated more than one model.
+ */
+export interface GameDescriptor {
+  label: string
+  minPlayers: number
+  maxPlayers: number
+  /** What one deal is called, for labels like "Stop after N rounds". */
+  roundNoun: string
+}
+
+export const GAMES: Record<GameKind, GameDescriptor> = {
+  blackjack: { label: 'Blackjack', minPlayers: 1, maxPlayers: 6, roundNoun: 'round' },
+  poker: { label: "No-Limit Hold'em", minPlayers: 2, maxPlayers: 8, roundNoun: 'hand' }
+}
+
+/**
  * How well the stored API key is actually protected at rest. This differs by
  * OS, and on Linux it differs by whether a desktop keyring is installed, so the
  * UI has to be told rather than assuming "encrypted".
@@ -71,23 +89,25 @@ export interface BlackjackHand {
   net?: number
 }
 
-export interface BlackjackState {
-  phase: 'idle' | 'dealing' | 'insurance' | 'player' | 'dealer' | 'settled'
-  roundNumber: number
+/**
+ * One model's seat at the blackjack table. Several seats share one shoe and one
+ * dealer, so every counter that used to live on the table is per player.
+ */
+export interface BlackjackPlayer {
+  id: string
+  name: string
+  modelId: string
+  seatIndex: number
   bankroll: number
-  baseBet: number
-  shoeRemaining: number
-  shoeJustShuffled: boolean
+  /** This round's hands, splits included. Empty when the seat was not dealt in. */
   hands: BlackjackHand[]
   activeHandIndex: number
-  dealerCards: Card[]
-  dealerHoleHidden: boolean
-  /** True once insurance has been offered this round (dealer showing an ace). */
-  insuranceOffered: boolean
+  /** What insurance would cost this seat this round; 0 when it was not offered. */
+  insuranceOffer: number
   /** Chips staked on insurance this round; 0 when declined or not offered. */
   insuranceBet: number
   insuranceOutcome?: 'won' | 'lost' | 'declined'
-  /** Net chips across the whole session, and for the round just settled. */
+  /** Net chips across this seat's whole session, and for the round just settled. */
   sessionNet: number
   lastRoundNet: number
   roundsPlayed: number
@@ -96,6 +116,24 @@ export interface BlackjackState {
   handsPushed: number
   blackjacks: number
   busts: number
+  /** Out of chips: can no longer cover the table minimum, so is not dealt in. */
+  busted: boolean
+}
+
+export interface BlackjackState {
+  phase: 'idle' | 'dealing' | 'insurance' | 'player' | 'dealer' | 'settled'
+  roundNumber: number
+  baseBet: number
+  shoeRemaining: number
+  shoeJustShuffled: boolean
+  players: BlackjackPlayer[]
+  /** Seat index of the player to act, or -1 when nobody is acting. */
+  activePlayerIndex: number
+  dealerCards: Card[]
+  dealerHoleHidden: boolean
+  /** True once insurance has been offered this round (dealer showing an ace). */
+  insuranceOffered: boolean
+  roundsPlayed: number
 }
 
 export interface BlackjackRules {

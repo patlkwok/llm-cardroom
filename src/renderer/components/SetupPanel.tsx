@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { KeyCheck } from '../App.tsx'
 import {
+  GAMES,
   REASONING_EFFORTS,
   type GameKind,
   type KeyStorageKind,
@@ -30,20 +31,17 @@ interface Props {
   onStop: () => void
 }
 
-const MAX_PLAYERS: Record<GameKind, number> = { blackjack: 1, poker: 8 }
-
 export function SetupPanel(props: Props): React.JSX.Element {
   const { settings, onChange, status, hasApiKey } = props
   const running = status === 'running' || status === 'paused' || status === 'stopping'
   const locked = running
-  // Poker seats can come and go between hands; a blackjack seat cannot.
-  const rosterLocked = running && settings.game !== 'poker'
-
+  // Both games seat and unseat models between rounds, so the roster itself is
+  // never locked while a match runs — only a seated model's own setup is.
   const players = settings.players
-  const maxPlayers = MAX_PLAYERS[settings.game]
-  const minPlayers = settings.game === 'poker' ? 2 : 1
+  const game = GAMES[settings.game]
+  const { minPlayers, maxPlayers } = game
 
-  const readyText = describeReadiness(settings, hasApiKey, minPlayers, maxPlayers, props.keyCheck)
+  const readyText = describeReadiness(settings, hasApiKey, props.keyCheck)
 
   function patch(partial: Partial<MatchSettings>): void {
     onChange({ ...settings, ...partial })
@@ -92,8 +90,9 @@ export function SetupPanel(props: Props): React.JSX.Element {
         </div>
         <p className="panel-hint">
           {settings.game === 'blackjack'
-            ? 'One model plays against the house dealer.'
-            : "Two to eight models play No-Limit Texas Hold'em against each other."}
+            ? `One to ${maxPlayers} models play the house dealer, sharing a single shoe. ` +
+              'They never play each other, but they see the same cards burn.'
+            : `Two to ${maxPlayers} models play No-Limit Texas Hold'em against each other.`}
         </p>
       </section>
 
@@ -114,7 +113,7 @@ export function SetupPanel(props: Props): React.JSX.Element {
               player={player}
               index={index}
               locked={locked}
-              rosterLocked={rosterLocked}
+              roundNoun={game.roundNoun}
               seated={props.seatedPlayerIds.includes(player.id)}
               onRename={(name) => {
                 const next = players.map((p) => (p.id === player.id ? { ...p, name } : p))
@@ -132,16 +131,19 @@ export function SetupPanel(props: Props): React.JSX.Element {
 
         <button
           className="primary-button block"
-          disabled={rosterLocked || players.length >= maxPlayers}
+          disabled={players.length >= maxPlayers}
           onClick={props.onAddPlayer}
         >
           + Add model
         </button>
-        {running && settings.game === 'poker' && (
+        {running && (
           <p className="panel-hint">
-            Seats added or removed now take effect from the next hand. A player
-            who leaves takes their chips; a player who joins buys in for{' '}
-            {settings.poker.startingStack}.
+            Seats added or removed now take effect from the next {game.roundNoun}. A
+            player who leaves takes their chips; a player who joins buys in for{' '}
+            {settings.game === 'poker'
+              ? settings.poker.startingStack
+              : settings.blackjack.startingBankroll}
+            .
           </p>
         )}
       </section>
@@ -196,6 +198,13 @@ export function SetupPanel(props: Props): React.JSX.Element {
               onChange={(deckCount) => patch({ blackjack: { ...settings.blackjack, deckCount } })}
             />
           </Field>
+          {players.length > 1 && (
+            <p className="panel-hint">
+              All {players.length} seats are dealt from that one shoe, and each
+              model is shown the others' cards. A real shoe game is face up, and
+              it is what makes counting the cards possible.
+            </p>
+          )}
           <Toggle
             label="Offer insurance on dealer ace"
             checked={settings.blackjack.offerInsurance}
@@ -280,7 +289,7 @@ export function SetupPanel(props: Props): React.JSX.Element {
           />
           <span className="range-value">{(settings.stepDelayMs / 1000).toFixed(1)}s</span>
         </Field>
-        <Field label={settings.game === 'blackjack' ? 'Stop after rounds' : 'Stop after hands'}>
+        <Field label={`Stop after ${game.roundNoun}s`}>
           <NumberInput
             value={settings.maxRounds}
             min={0}
@@ -335,16 +344,13 @@ export function SetupPanel(props: Props): React.JSX.Element {
 function describeReadiness(
   settings: MatchSettings,
   hasApiKey: boolean,
-  minPlayers: number,
-  maxPlayers: number,
   keyCheck: KeyCheck
 ): string {
+  const { minPlayers, maxPlayers } = GAMES[settings.game]
   if (!hasApiKey) return 'Add your OpenRouter API key to begin.'
   if (keyCheck.state === 'bad') return 'The saved API key was rejected. Replace it before dealing in.'
   if (settings.players.length < minPlayers) {
-    return settings.game === 'poker'
-      ? `Seat at least ${minPlayers} models.`
-      : 'Seat a model at the table.'
+    return minPlayers > 1 ? `Seat at least ${minPlayers} models.` : 'Seat a model at the table.'
   }
   if (settings.players.length > maxPlayers) return `This game seats at most ${maxPlayers}.`
   if (settings.game === 'poker' && settings.poker.bigBlind <= settings.poker.smallBlind) {
@@ -371,7 +377,7 @@ function PlayerRow({
   player,
   index,
   locked,
-  rosterLocked,
+  roundNoun,
   seated,
   onRename,
   onEffort,
@@ -381,7 +387,7 @@ function PlayerRow({
   player: PlayerConfig
   index: number
   locked: boolean
-  rosterLocked: boolean
+  roundNoun: string
   seated: boolean
   onRename: (name: string) => void
   onEffort: (value: ReasoningEffort) => void
@@ -399,10 +405,13 @@ function PlayerRow({
         <span className={`player-index${locked && !seated ? ' player-pending' : ''}`}>
           {locked && !seated ? '·' : index + 1}
         </span>
+        {/* Editable until the model is actually dealt in, exactly like its
+            reasoning effort and its model. Only a seat already at the table is
+            frozen — its name is already on the felt and in the log. */}
         <input
           className="player-name"
           value={player.name}
-          disabled={locked}
+          disabled={settingsLocked}
           maxLength={22}
           onChange={(event) => onRename(event.target.value)}
         />
@@ -415,8 +424,7 @@ function PlayerRow({
         </button>
         <button
           className="icon-button danger"
-          title={rosterLocked ? 'Remove' : 'Remove after this hand'}
-          disabled={rosterLocked}
+          title={locked ? `Remove after this ${roundNoun}` : 'Remove'}
           onClick={onRemove}
         >
           ×
@@ -426,7 +434,7 @@ function PlayerRow({
         {player.modelId}
       </div>
       {locked && !seated && (
-        <div className="player-waiting">joins next hand — set up now</div>
+        <div className="player-waiting">joins next {roundNoun} — set up now</div>
       )}
       {expanded && (
         <div className="player-detail">
@@ -448,7 +456,7 @@ function PlayerRow({
             {settingsLocked
               ? 'Fixed for this match: a model that thinks differently is a different player.'
               : locked
-                ? 'Adjustable until this model is dealt in on the next hand.'
+                ? `Adjustable until this model is dealt in on the next ${roundNoun}.`
                 : 'Ignored by models that cannot reason. Higher effort thinks longer and costs more per decision.'}
           </p>
           <button className="ghost-button block" disabled={settingsLocked} onClick={onReplace}>

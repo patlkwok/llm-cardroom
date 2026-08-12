@@ -1,18 +1,19 @@
 import { describeValue, handValue } from '../../shared/blackjackValue.ts'
 import type {
   BlackjackHand,
+  BlackjackPlayer,
   BlackjackRules,
-  BlackjackState,
-  PlayerConfig
+  BlackjackState
 } from '../../shared/types.ts'
 import { CardRow } from './PlayingCard.tsx'
 
 interface Props {
   state: BlackjackState
-  player?: PlayerConfig
-  thinking: boolean
+  thinking: Record<string, boolean>
   rules: BlackjackRules
 }
+
+type CardSize = 'sm' | 'md' | 'lg'
 
 const OUTCOME_LABEL: Record<string, string> = {
   blackjack: 'Blackjack!',
@@ -21,13 +22,34 @@ const OUTCOME_LABEL: Record<string, string> = {
   lose: 'Loss'
 }
 
-export function BlackjackView({ state, player, thinking, rules }: Props): React.JSX.Element {
+/**
+ * Six seats will not fit at the size one seat looks best at. Sized by hands
+ * rather than seats, because a split puts two hands where one stood and is
+ * exactly as demanding on the width as an extra seat would be.
+ */
+function cardSize(handCount: number): CardSize {
+  if (handCount <= 2) return 'lg'
+  if (handCount <= 4) return 'md'
+  return 'sm'
+}
+
+export function BlackjackView({ state, thinking, rules }: Props): React.JSX.Element {
   const dealerVisible = state.dealerHoleHidden ? state.dealerCards.slice(0, 1) : state.dealerCards
   const dealerTotal = state.dealerCards.length
     ? state.dealerHoleHidden
       ? `${handValue(dealerVisible).total} + ?`
       : describeValue(state.dealerCards)
     : '—'
+
+  const seats = state.players
+  // A split seat asks for as much room as an extra seat does, so the felt is
+  // sized by hands on the table, not by how many models are sitting at it.
+  const handCount = seats.reduce((sum, player) => sum + Math.max(1, player.hands.length), 0)
+  const size = cardSize(handCount)
+  const total = (pick: (player: BlackjackPlayer) => number): number =>
+    seats.reduce((sum, player) => sum + pick(player), 0)
+  const sessionNet = Math.round(total((p) => p.sessionNet) * 100) / 100
+  const multi = seats.length > 1
 
   return (
     <div className="felt felt-blackjack">
@@ -48,70 +70,159 @@ export function BlackjackView({ state, player, thinking, rules }: Props): React.
         </div>
       </div>
 
-      <div className="bj-player">
-        <div className="bj-hands">
-          {state.hands.length === 0 && (
-            <div className="empty-hand">Waiting for the first deal…</div>
-          )}
-          {state.hands.map((hand, index) => (
+      <div className="bj-seats">
+        {seats.length === 0 && <div className="empty-hand">No models seated yet.</div>}
+        {seats.map((seat) => (
+          <SeatBox
+            key={seat.id}
+            seat={seat}
+            size={size}
+            acting={state.phase === 'player' && seat.seatIndex === state.activePlayerIndex}
+            thinking={Boolean(thinking[seat.id])}
+            phase={state.phase}
+          />
+        ))}
+      </div>
+
+      {/* Every figure here except the round and the shoe is a total across the
+          whole table. The per-seat numbers live on the seat plates, so the
+          labels say "table" out loud rather than leaving it to be guessed. */}
+      <div className="bj-stats">
+        <Stat label="Round" value={String(state.roundNumber)} title="Rounds dealt so far" />
+        <Stat
+          label={multi ? 'Table net' : 'Session'}
+          value={`${sessionNet >= 0 ? '+' : ''}${sessionNet}`}
+          tone={sessionNet > 0 ? 'good' : sessionNet < 0 ? 'bad' : undefined}
+          title={
+            multi
+              ? `Every seat's session net added together, across ${seats.length} seats`
+              : 'Net chips across the session'
+          }
+        />
+        <Stat
+          label={multi ? 'Table W / L / P' : 'W / L / P'}
+          value={`${total((p) => p.handsWon)} / ${total((p) => p.handsLost)} / ${total((p) => p.handsPushed)}`}
+          title={`Hands won, lost and pushed${multi ? ', added up across every seat' : ''}`}
+        />
+        <Stat
+          label="Blackjacks"
+          value={String(total((p) => p.blackjacks))}
+          title={`Naturals dealt${multi ? ' to any seat' : ''}`}
+        />
+        <Stat
+          label="Busts"
+          value={String(total((p) => p.busts))}
+          title={`Hands busted${multi ? ' by any seat' : ''}`}
+        />
+        <Stat
+          label="Shoe"
+          value={`${state.shoeRemaining} cards`}
+          title="Cards left before the shoe is reshuffled — one shoe serves the whole table"
+        />
+      </div>
+    </div>
+  )
+}
+
+function insuranceText(seat: BlackjackPlayer, phase: BlackjackState['phase']): string | null {
+  if (seat.insuranceBet > 0) {
+    return (
+      `Insurance ${seat.insuranceBet}` +
+      (seat.insuranceOutcome === 'won'
+        ? ` · pays ${seat.insuranceBet * 2}`
+        : seat.insuranceOutcome === 'lost'
+          ? ' · lost'
+          : '')
+    )
+  }
+  if (seat.insuranceOutcome === 'declined') return 'Insurance declined'
+  if (phase === 'insurance' && seat.insuranceOffer > 0) return 'Insurance offered…'
+  return null
+}
+
+function SeatBox({
+  seat,
+  size,
+  acting,
+  thinking,
+  phase
+}: {
+  seat: BlackjackPlayer
+  size: CardSize
+  acting: boolean
+  thinking: boolean
+  phase: BlackjackState['phase']
+}): React.JSX.Element {
+  const classes = ['bj-seat']
+  if (seat.hands.length > 1) classes.push('bj-seat-split')
+  if (acting || thinking) classes.push('bj-seat-acting')
+  if (seat.busted) classes.push('bj-seat-out')
+  if (phase === 'settled' && seat.lastRoundNet > 0) classes.push('bj-seat-winner')
+
+  const insurance = insuranceText(seat, phase)
+  // A split seat claims width in proportion to its hands, so its hands sit side
+  // by side wherever the row can afford it. At a full six they still stack —
+  // there is no width for two boxes — but the growth is bounded, because four
+  // hands claim four units and then wrap two-by-two rather than four deep.
+  const hands = Math.max(1, seat.hands.length)
+
+  return (
+    <div className={classes.join(' ')} style={{ flexGrow: hands, maxWidth: `${260 * hands}px` }}>
+      <div className="bj-hands">
+        {seat.hands.length === 0 ? (
+          <div className="bj-idle">{seat.busted ? 'out of chips' : 'waiting'}</div>
+        ) : (
+          seat.hands.map((hand, index) => (
             <HandBox
               key={hand.id}
               hand={hand}
-              active={state.phase === 'player' && index === state.activeHandIndex}
-              multi={state.hands.length > 1}
+              size={size}
+              active={acting && index === seat.activeHandIndex}
+              multi={seat.hands.length > 1}
               index={index}
             />
-          ))}
-        </div>
-
-        {(state.insuranceOffered || state.insuranceBet > 0) && (
-          <div className={`insurance-chip insurance-${state.insuranceOutcome ?? 'pending'}`}>
-            {state.phase === 'insurance'
-              ? 'Insurance offered…'
-              : state.insuranceBet > 0
-                ? `Insurance ${state.insuranceBet}` +
-                  (state.insuranceOutcome === 'won'
-                    ? ` · pays ${state.insuranceBet * 2}`
-                    : state.insuranceOutcome === 'lost'
-                      ? ' · lost'
-                      : '')
-                : 'Insurance declined'}
-          </div>
+          ))
         )}
+      </div>
 
-        <div className="seat-label seat-label-player">
-          <span className={`seat-name${thinking ? ' seat-thinking' : ''}`}>
-            {player?.name ?? 'No model seated'}
-            {thinking && <span className="dots"><i /><i /><i /></span>}
-          </span>
-          <span className="seat-chip seat-chip-gold">{state.bankroll} chips</span>
+      {insurance && (
+        <div className={`insurance-chip insurance-${seat.insuranceOutcome ?? 'pending'}`}>
+          {insurance}
         </div>
-        {player && <div className="seat-model">{player.modelId}</div>}
-      </div>
+      )}
 
-      <div className="bj-stats">
-        <Stat label="Round" value={String(state.roundNumber)} />
-        <Stat
-          label="Session"
-          value={`${state.sessionNet >= 0 ? '+' : ''}${state.sessionNet}`}
-          tone={state.sessionNet > 0 ? 'good' : state.sessionNet < 0 ? 'bad' : undefined}
-        />
-        <Stat label="W / L / P" value={`${state.handsWon} / ${state.handsLost} / ${state.handsPushed}`} />
-        <Stat label="Blackjacks" value={String(state.blackjacks)} />
-        <Stat label="Busts" value={String(state.busts)} />
-        <Stat label="Shoe" value={`${state.shoeRemaining} cards`} />
+      <div className="seat-label">
+        {/* The name needs its own element: text-overflow does not apply to a
+            flex container, so putting it directly here clips long names
+            mid-character instead of ellipsising them. */}
+        <span className={`seat-name${thinking ? ' seat-thinking' : ''}`}>
+          <span className="seat-name-text">{seat.name}</span>
+          {thinking && <span className="dots"><i /><i /><i /></span>}
+        </span>
       </div>
+      <div className="bj-seat-meta">
+        <span className="seat-chip seat-chip-gold">{seat.bankroll}</span>
+        {seat.sessionNet !== 0 && (
+          <span className={`bj-net ${seat.sessionNet > 0 ? 'stat-good' : 'stat-bad'}`}>
+            {seat.sessionNet > 0 ? '+' : ''}
+            {seat.sessionNet}
+          </span>
+        )}
+      </div>
+      <div className="seat-model">{seat.modelId}</div>
     </div>
   )
 }
 
 function HandBox({
   hand,
+  size,
   active,
   multi,
   index
 }: {
   hand: BlackjackHand
+  size: CardSize
   active: boolean
   multi: boolean
   index: number
@@ -124,7 +235,7 @@ function HandBox({
   return (
     <div className={classes.join(' ')}>
       {multi && <div className="hand-index">Hand {index + 1}</div>}
-      <CardRow cards={hand.cards} size="lg" />
+      <CardRow cards={hand.cards} size={size} />
       <div className="hand-meta">
         <span className="hand-total">{describeValue(hand.cards)}</span>
         <span className="hand-bet">bet {hand.bet}</span>
@@ -144,14 +255,16 @@ function HandBox({
 function Stat({
   label,
   value,
-  tone
+  tone,
+  title
 }: {
   label: string
   value: string
   tone?: 'good' | 'bad'
+  title?: string
 }): React.JSX.Element {
   return (
-    <div className="stat">
+    <div className="stat" title={title}>
       <div className="stat-label">{label}</div>
       <div className={`stat-value${tone ? ` stat-${tone}` : ''}`}>{value}</div>
     </div>

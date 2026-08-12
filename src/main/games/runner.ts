@@ -1,6 +1,8 @@
 import { cardCode } from '../../shared/cards.ts'
+import { GAMES } from '../../shared/types.ts'
 import type {
   BlackjackAction,
+  BlackjackPlayer,
   DecisionRecord,
   LogEntry,
   LogLevel,
@@ -31,6 +33,20 @@ export type Emit = (event: MatchEvent) => void
 
 interface StatsAccumulator extends PlayerStats {
   latencyTotal: number
+}
+
+/**
+ * The bit of a game table the roster code needs. Both games seat and unseat
+ * models at a round boundary on identical terms, so they share one
+ * implementation rather than two that can drift apart.
+ */
+interface RosterTable {
+  /** Read fresh on every call: seating changes as the reconciliation runs. */
+  seats: () => Array<{ id: string; name: string; chips: number }>
+  capacity: number
+  buyIn: number
+  add: (player: PlayerConfig, buyIn: number) => void
+  remove: (id: string) => boolean
 }
 
 export class MatchRunner {
@@ -117,80 +133,136 @@ export class MatchRunner {
       )
     }
 
-    // Poker seats may be added or removed, but only at a hand boundary.
-    if (this.settings.game === 'poker' && this.poker) {
-      const seated = new Set(this.poker.state.seats.map((seat) => seat.id))
-      const arriving = next.players.filter((p) => !seated.has(p.id))
-      const differs =
-        next.players.length !== this.roster.length ||
-        next.players.some((p, i) => {
-          const current = this.roster[i]
-          if (!current || p.id !== current.id) return true
-          // A seated model is fixed for the match; only an unseated one may
-          // still have its reasoning effort adjusted.
-          return !seated.has(p.id) && p.reasoningEffort !== current.reasoningEffort
-        })
+    // Seats may be added or removed in either game, but only at a round
+    // boundary — never with cards dealt or chips already in a pot.
+    const seated = this.blackjack
+      ? new Set(this.blackjack.state.players.map((player) => player.id))
+      : this.poker
+        ? new Set(this.poker.state.seats.map((seat) => seat.id))
+        : null
+    if (seated) this.queueRosterChange(next.players, seated)
+  }
 
-      if (differs) {
-        this.pendingRoster = [...next.players]
-
-        // Give the operator a chance to set the newcomer up before it is dealt
-        // in, rather than racing the next hand at whatever pace is set.
-        const newcomers = arriving.filter(
-          (p) => !this.roster.some((existing) => existing.id === p.id)
+  /** Holds a roster change until the next round boundary. */
+  private queueRosterChange(desired: PlayerConfig[], seated: Set<string>): void {
+    const differs =
+      desired.length !== this.roster.length ||
+      desired.some((p, i) => {
+        const current = this.roster[i]
+        if (!current || p.id !== current.id) return true
+        // A seated model is fixed for the match. An unseated one is still
+        // fully editable — name, model and effort alike — so a change to any
+        // of them has to re-queue the roster, or the edit is silently lost.
+        // Comparing only the effort worked by accident while the roster and
+        // the desired list were different lengths, and failed outright when
+        // they were not: a join refused because the table was full leaves an
+        // unseated model sitting in the roster at matching length.
+        if (seated.has(p.id)) return false
+        return (
+          p.name !== current.name ||
+          p.modelId !== current.modelId ||
+          p.reasoningEffort !== current.reasoningEffort
         )
-        if (newcomers.length > 0 && this.status === 'running') {
-          this.pause()
-          this.log(
-            'system',
-            `${newcomers.map((p) => p.name).join(', ')} will join next hand. ` +
-              'Set their reasoning effort now, then resume.'
-          )
-        }
-      }
+      })
+    if (!differs) return
+
+    // Read before the queue is replaced: a model already waiting to join is not
+    // a new arrival, it is the same one being edited.
+    const alreadyQueued = new Set(this.pendingRoster?.map((p) => p.id) ?? [])
+    this.pendingRoster = [...desired]
+
+    // Give the operator a chance to set the newcomer up before it is dealt in,
+    // rather than racing the next round at whatever pace is set. Only on
+    // arrival, though — pausing again on every later edit would stop the table
+    // dead on each keystroke of a rename.
+    const newcomers = desired.filter(
+      (p) =>
+        !seated.has(p.id) &&
+        !alreadyQueued.has(p.id) &&
+        !this.roster.some((existing) => existing.id === p.id)
+    )
+    if (newcomers.length > 0 && this.status === 'running') {
+      this.pause()
+      this.log(
+        'system',
+        `${newcomers.map((p) => p.name).join(', ')} will join next ` +
+          `${GAMES[this.settings.game].roundNoun}. Set them up now, then resume.`
+      )
     }
   }
 
   /**
-   * Applies a queued roster change. Only ever called between hands, so no seat
-   * is ever added or removed with chips committed to a live pot.
+   * Applies a queued roster change. Only ever called between rounds, so no seat
+   * is added or removed with chips committed to a live pot or a live hand.
    */
-  private reconcilePokerRoster(table: PokerTable): void {
+  private reconcileRoster(table: RosterTable): void {
     const desired = this.pendingRoster
     if (!desired) return
     this.pendingRoster = null
 
-    for (const seat of [...table.state.seats]) {
+    for (const seat of table.seats()) {
       if (desired.some((p) => p.id === seat.id)) continue
-      const chips = seat.stack
-      if (table.removeSeat(seat.id)) {
+      const chips = seat.chips
+      if (table.remove(seat.id)) {
         this.log('system', `${seat.name} leaves the table, taking ${chips} chips.`)
       }
     }
 
     for (const player of desired) {
-      if (table.state.seats.some((seat) => seat.id === player.id)) continue
-      if (table.state.seats.length >= 8) {
-        this.log('error', `${player.name} cannot join: the table is full at 8 seats.`)
+      if (table.seats().some((seat) => seat.id === player.id)) continue
+      if (table.seats().length >= table.capacity) {
+        this.log('error', `${player.name} cannot join: the table is full at ${table.capacity} seats.`)
         continue
       }
-      const stack = this.settings.poker.startingStack
-      table.addSeat({ id: player.id, name: player.name, modelId: player.modelId }, stack)
+      table.add(player, table.buyIn)
       this.ensureStats(player.id)
       this.log(
         'system',
-        `${player.name} joins the table with ${stack} chips` +
+        `${player.name} joins the table with ${table.buyIn} chips` +
           `${player.reasoningEffort === 'default' ? '' : ` (${player.reasoningEffort} reasoning effort)`}.`
       )
     }
 
     // A model already at the table keeps the settings it sat down with: a
     // different reasoning effort is effectively a different player.
+    const seatedNow = new Set(table.seats().map((seat) => seat.id))
     this.roster = desired.map((player) => {
-      const wasSeated = table.state.seats.some((seat) => seat.id === player.id)
       const existing = this.roster.find((p) => p.id === player.id)
-      return wasSeated && existing ? existing : player
+      return seatedNow.has(player.id) && existing ? existing : player
     })
+  }
+
+  private pokerRoster(table: PokerTable): RosterTable {
+    return {
+      seats: () =>
+        table.state.seats.map((seat) => ({ id: seat.id, name: seat.name, chips: seat.stack })),
+      capacity: GAMES.poker.maxPlayers,
+      buyIn: this.settings.poker.startingStack,
+      add: (player, buyIn) =>
+        table.addSeat({ id: player.id, name: player.name, modelId: player.modelId }, buyIn),
+      remove: (id) => table.removeSeat(id)
+    }
+  }
+
+  private blackjackRoster(table: BlackjackTable): RosterTable {
+    return {
+      seats: () =>
+        table.state.players.map((player) => ({
+          id: player.id,
+          name: player.name,
+          chips: player.bankroll
+        })),
+      capacity: GAMES.blackjack.maxPlayers,
+      buyIn: this.settings.blackjack.startingBankroll,
+      add: (player, buyIn) =>
+        table.addPlayer({ id: player.id, name: player.name, modelId: player.modelId }, buyIn),
+      remove: (id) => table.removePlayer(id)
+    }
+  }
+
+  /** The live configuration for a seat, which may differ from the settings. */
+  private configFor(playerId: string): PlayerConfig | undefined {
+    return this.roster.find((player) => player.id === playerId)
   }
 
   pause(): void {
@@ -346,62 +418,108 @@ export class MatchRunner {
   /* ---------------------------------------------------------- blackjack */
 
   private async runBlackjack(): Promise<void> {
-    const player = this.settings.players[0]
-    if (!player) throw new Error('Add a model to the table before starting.')
+    const limits = GAMES.blackjack
+    if (this.roster.length < limits.minPlayers) {
+      throw new Error('Add a model to the table before starting.')
+    }
+    if (this.roster.length > limits.maxPlayers) {
+      throw new Error(`Blackjack seats at most ${limits.maxPlayers} models.`)
+    }
 
     const rules = this.settings.blackjack
-    const table = new BlackjackTable(rules)
+    const table = new BlackjackTable(
+      rules,
+      this.roster.map((p) => ({ id: p.id, name: p.name, modelId: p.modelId }))
+    )
     this.blackjack = table
 
-    this.log('system', `${player.name} sits down with ${rules.startingBankroll} chips, betting ${rules.baseBet} a hand.`)
+    this.log(
+      'system',
+      this.roster.length === 1
+        ? `${this.roster[0].name} sits down with ${rules.startingBankroll} chips, betting ${rules.baseBet} a hand.`
+        : `${this.roster.length} models sit down with ${rules.startingBankroll} chips each, ` +
+          `betting ${rules.baseBet} a hand and sharing one ${rules.deckCount}-deck shoe.`
+    )
     this.pushSnapshot()
 
     while (!this.isStopping) {
       const maxRounds = this.live.maxRounds
       if (maxRounds > 0 && table.state.roundsPlayed >= maxRounds) break
-      if (table.isBroke) {
-        this.log('result', `${player.name} is out of chips after ${table.state.roundsPlayed} rounds.`)
-        break
-      }
 
       await this.gate()
       if (this.isStopping) break
 
+      // Seats join or leave here, at the boundary between rounds.
+      this.reconcileRoster(this.blackjackRoster(table))
+      if (table.state.players.length === 0) {
+        this.log('result', 'Nobody is left at the table, so the game ends.')
+        break
+      }
+
       // Picked up here so a stake change lands on the next deal, never mid-hand.
       table.setBaseBet(this.live.blackjackBaseBet)
-      const wager = this.live.modelChoosesBet
-        ? await this.chooseBlackjackWager(player, table)
-        : undefined
+      // The engine reports the transition, so a seat that went broke in round 7
+      // is not re-announced in every round after it.
+      for (const retired of table.retireBrokePlayers()) {
+        this.log(
+          'result',
+          `${retired.name} is out of chips after ${retired.roundsPlayed} rounds.`,
+          retired.id
+        )
+      }
+      if (table.isTableBroke) {
+        // The line above already named the only seat, so this would just repeat
+        // it back at a one-seat table.
+        if (table.state.players.length > 1) {
+          this.log('result', `Nobody can cover the stake after ${table.state.roundsPlayed} rounds.`)
+        }
+        break
+      }
+
+      const wagers = await this.collectWagers(table)
       if (this.isStopping) break
 
-      const resolvedOnDeal = table.startRound(wager)
+      const resolvedOnDeal = table.startRound(wagers)
       if (table.state.shoeJustShuffled) this.log('system', 'The shoe is reshuffled.')
 
-      const hand = table.state.hands[0]
       this.log(
         'deal',
-        `Round ${table.state.roundNumber}: ${player.name} bets ${hand.bet} and is dealt ` +
-          `${hand.cards.map(cardCode).join(' ')} (${describeValue(hand.cards)}); ` +
-          `dealer shows ${cardCode(table.state.dealerCards[0])}.`
+        `Round ${table.state.roundNumber}: dealer shows ${cardCode(table.state.dealerCards[0])}.`
       )
+      for (const seat of table.activePlayers) {
+        const hand = seat.hands[0]
+        if (!hand) continue
+        this.log(
+          'deal',
+          `${seat.name} bets ${hand.bet} and is dealt ${hand.cards.map(cardCode).join(' ')} ` +
+            `(${describeValue(hand.cards)}).`,
+          seat.id
+        )
+      }
       this.pushSnapshot()
       await this.beat()
 
       let resolved = resolvedOnDeal
       if (table.awaitingInsurance && !this.isStopping) {
-        resolved = await this.offerInsurance(player, table)
+        resolved = await this.offerInsurance(table)
       }
       if (this.isStopping) break
 
+      for (const seat of table.activePlayers) {
+        if (seat.hands[0]?.status === 'blackjack') {
+          this.log('result', `${seat.name} has blackjack!`, seat.id)
+        }
+      }
+
       if (!resolved) {
+        // Six seats, four split hands each and a long run of hits is still far
+        // inside this bound; it exists only to stop a wedged engine spinning.
         let guard = 0
-        while (table.awaitingPlayer && !this.isStopping && guard++ < 40) {
+        while (table.awaitingPlayer && !this.isStopping && guard++ < 500) {
           await this.gate()
           if (this.isStopping) break
-          await this.playBlackjackTurn(player, table)
+          await this.playBlackjackTurn(table)
         }
-      } else if (hand.status === 'blackjack') {
-        this.log('result', `${player.name} has blackjack!`)
       }
 
       if (this.isStopping) break
@@ -418,94 +536,146 @@ export class MatchRunner {
       await this.beat()
 
       table.settle()
-      if (table.state.insuranceBet > 0) {
-        this.log(
-          'result',
-          table.state.insuranceOutcome === 'won'
-            ? `Insurance pays 2:1 — ${player.name} collects ${table.state.insuranceBet * 2} on the side bet.`
-            : `Insurance loses — ${player.name} is down ${table.state.insuranceBet} on the side bet.`,
-          player.id
-        )
-      }
-      for (const settled of table.state.hands) {
-        const net = settled.net ?? 0
-        const verdict =
-          settled.outcome === 'blackjack' ? 'wins with blackjack' :
-          settled.outcome === 'win' ? 'wins' :
-          settled.outcome === 'push' ? 'pushes' : 'loses'
-        this.log(
-          'result',
-          `${player.name} ${verdict} ${net === 0 ? '' : `${net > 0 ? '+' : ''}${net} `}` +
-            `(${settled.cards.map(cardCode).join(' ')} = ${describeValue(settled.cards)}).`
-        )
-      }
-      this.log(
-        'result',
-        `Bankroll: ${table.state.bankroll} chips (session ${table.state.sessionNet >= 0 ? '+' : ''}${table.state.sessionNet}).`
-      )
+      this.reportRound(table)
       this.pushSnapshot()
       await this.beat(1.4)
     }
   }
 
-  /**
-   * Runs the insurance offer when the dealer shows an ace. Returns true when
-   * the resulting peek ended the round outright.
-   */
-  private async offerInsurance(player: PlayerConfig, table: BlackjackTable): Promise<boolean> {
-    const cost = table.insuranceCost
-    const prompt = buildBlackjackInsurancePrompt(table.state, cost, this.settings.blackjack)
-
-    this.emit({ type: 'thinking', playerId: player.id, playerName: player.name, active: true })
-    const result = await requestDecision<boolean>({
-      apiKey: this.apiKey,
-      player,
-      prompt,
-      parse: parseBlackjackInsuranceReply,
-      // Declining is the safe default: insurance is a losing bet on average.
-      fallback: false,
-      signal: this.abort.signal,
-      onAttemptFailed: (attempt, problem) =>
-        this.log('error', `${player.name} attempt ${attempt} rejected: ${problem}`, player.id)
-    })
-    this.emit({ type: 'thinking', playerId: player.id, playerName: player.name, active: false })
-
-    if (this.isStopping) return false
-    this.failFast(result)
-
-    if (result.fallbackReason) {
-      this.log(
-        'error',
-        `${player.name} could not answer the insurance offer (${result.fallbackReason}) — declining.`,
-        player.id
-      )
+  /** Logs what every seat did with the round that just settled. */
+  private reportRound(table: BlackjackTable): void {
+    for (const seat of table.state.players) {
+      if (seat.insuranceBet > 0) {
+        this.log(
+          'result',
+          seat.insuranceOutcome === 'won'
+            ? `Insurance pays 2:1 — ${seat.name} collects ${seat.insuranceBet * 2} on the side bet.`
+            : `Insurance loses — ${seat.name} is down ${seat.insuranceBet} on the side bet.`,
+          seat.id
+        )
+      }
+      for (const hand of seat.hands) {
+        const net = hand.net ?? 0
+        const verdict =
+          hand.outcome === 'blackjack' ? 'wins with blackjack' :
+          hand.outcome === 'win' ? 'wins' :
+          hand.outcome === 'push' ? 'pushes' : 'loses'
+        this.log(
+          'result',
+          `${seat.name} ${verdict} ${net === 0 ? '' : `${net > 0 ? '+' : ''}${net} `}` +
+            `(${hand.cards.map(cardCode).join(' ')} = ${describeValue(hand.cards)}).`,
+          seat.id
+        )
+      }
     }
 
-    const took = result.action
-    this.recordDecision(player, took ? 'takes insurance' : 'declines insurance', result)
-    this.log(
-      'action',
-      took
-        ? `${player.name} takes insurance for ${cost} chips.`
-        : `${player.name} declines insurance.`,
-      player.id
-    )
+    const dealt = table.state.players.filter((seat) => seat.hands.length > 0)
+    if (dealt.length === 1) {
+      const seat = dealt[0]
+      this.log(
+        'result',
+        `Bankroll: ${seat.bankroll} chips (session ${seat.sessionNet >= 0 ? '+' : ''}${seat.sessionNet}).`,
+        seat.id
+      )
+    } else if (dealt.length > 1) {
+      this.log(
+        'result',
+        'Bankrolls — ' +
+          dealt
+            .map((seat) => `${seat.name} ${seat.bankroll} (${seat.sessionNet >= 0 ? '+' : ''}${seat.sessionNet})`)
+            .join('; ') +
+          '.'
+      )
+    }
+  }
 
-    const resolved = table.resolveInsurance(took)
+  /**
+   * Runs the insurance offer, seat by seat, when the dealer shows an ace.
+   * Returns true when the resulting peek ended the round outright.
+   */
+  private async offerInsurance(table: BlackjackTable): Promise<boolean> {
+    for (;;) {
+      const seat = table.insuranceSeat
+      if (!seat || this.isStopping) break
+      const player = this.configFor(seat.id)
+      if (!player) {
+        table.takeInsurance(seat.id, false)
+        continue
+      }
+
+      const cost = seat.insuranceOffer
+      const prompt = buildBlackjackInsurancePrompt(table.state, seat, cost, this.settings.blackjack)
+
+      this.emit({ type: 'thinking', playerId: player.id, playerName: player.name, active: true })
+      const result = await requestDecision<boolean>({
+        apiKey: this.apiKey,
+        player,
+        prompt,
+        parse: parseBlackjackInsuranceReply,
+        // Declining is the safe default: insurance is a losing bet on average.
+        fallback: false,
+        signal: this.abort.signal,
+        onAttemptFailed: (attempt, problem) =>
+          this.log('error', `${player.name} attempt ${attempt} rejected: ${problem}`, player.id)
+      })
+      this.emit({ type: 'thinking', playerId: player.id, playerName: player.name, active: false })
+
+      if (this.isStopping) return false
+      this.failFast(result)
+
+      if (result.fallbackReason) {
+        this.log(
+          'error',
+          `${player.name} could not answer the insurance offer (${result.fallbackReason}) — declining.`,
+          player.id
+        )
+      }
+
+      const took = result.action
+      this.recordDecision(player, took ? 'takes insurance' : 'declines insurance', result)
+      this.log(
+        'action',
+        took
+          ? `${player.name} takes insurance for ${cost} chips.`
+          : `${player.name} declines insurance.`,
+        player.id
+      )
+      table.takeInsurance(seat.id, took)
+      this.pushSnapshot()
+      await this.beat(0.5)
+    }
+
+    if (this.isStopping) return false
+    const resolved = table.closeInsurance()
     this.pushSnapshot()
     await this.beat()
     return resolved
   }
 
+  /** Sizes every seat's wager before the cards come out. */
+  private async collectWagers(table: BlackjackTable): Promise<Record<string, number>> {
+    const wagers: Record<string, number> = {}
+    if (!this.live.modelChoosesBet) return wagers
+
+    for (const seat of table.activePlayers) {
+      if (this.isStopping) break
+      const player = this.configFor(seat.id)
+      if (!player) continue
+      wagers[seat.id] = await this.chooseBlackjackWager(player, table, seat)
+    }
+    return wagers
+  }
+
   /** Asks the model to size its own wager before the cards come out. */
   private async chooseBlackjackWager(
     player: PlayerConfig,
-    table: BlackjackTable
+    table: BlackjackTable,
+    seat: BlackjackPlayer
   ): Promise<number> {
-    const limits = table.betLimits()
+    const limits = table.betLimits(seat)
     if (limits.min >= limits.max) return limits.min
 
-    const prompt = buildBlackjackBetPrompt(table.state, limits, this.settings.blackjack)
+    const prompt = buildBlackjackBetPrompt(table.state, seat, limits, this.settings.blackjack)
 
     this.emit({ type: 'thinking', playerId: player.id, playerName: player.name, active: true })
     const result = await requestDecision<number>({
@@ -535,11 +705,16 @@ export class MatchRunner {
     return result.action
   }
 
-  private async playBlackjackTurn(player: PlayerConfig, table: BlackjackTable): Promise<void> {
+  private async playBlackjackTurn(table: BlackjackTable): Promise<void> {
+    const seat = table.activePlayer
+    if (!seat) return
+    const player = this.configFor(seat.id)
+    if (!player) throw new Error(`No model configured for seat ${seat.name}.`)
+
     const legal = table.legalActions()
     if (!legal.length) return
 
-    const prompt = buildBlackjackPrompt(table.state, legal, this.settings.blackjack)
+    const prompt = buildBlackjackPrompt(table.state, seat, legal, this.settings.blackjack)
 
     this.emit({ type: 'thinking', playerId: player.id, playerName: player.name, active: true })
     const result = await requestDecision<BlackjackAction>({
@@ -581,9 +756,14 @@ export class MatchRunner {
   /* -------------------------------------------------------------- poker */
 
   private async runPoker(): Promise<void> {
-    const players = this.settings.players
-    if (players.length < 2) throw new Error('Poker needs at least 2 models at the table.')
-    if (players.length > 8) throw new Error('Poker supports at most 8 models.')
+    const players = this.roster
+    const limits = GAMES.poker
+    if (players.length < limits.minPlayers) {
+      throw new Error(`Poker needs at least ${limits.minPlayers} models at the table.`)
+    }
+    if (players.length > limits.maxPlayers) {
+      throw new Error(`Poker supports at most ${limits.maxPlayers} models.`)
+    }
 
     const rules = this.settings.poker
     const table = new PokerTable(
@@ -606,7 +786,7 @@ export class MatchRunner {
       if (this.isStopping) break
 
       // Seats join or leave here, at the boundary between hands.
-      this.reconcilePokerRoster(table)
+      this.reconcileRoster(this.pokerRoster(table))
       if (table.state.seats.filter((seat) => !seat.busted).length < 2) {
         this.log('result', 'Fewer than two players remain, so the table closes.')
         break
@@ -636,11 +816,7 @@ export class MatchRunner {
         if (step.kind === 'await') {
           await this.gate()
           if (this.isStopping) break
-          const foldedBefore = table.state.seats.filter((seat) => seat.folded).length
           await this.playPokerTurn(table, step.seatIndex, history)
-          if (table.state.seats.filter((seat) => seat.folded).length !== foldedBefore) {
-            if (this.live.showEquity) table.refreshEquity()
-          }
         } else if (step.kind === 'street') {
           const board = table.state.board.map(cardCode).join(' ')
           this.log('deal', `${capitalise(step.street)}: ${step.cards.map(cardCode).join(' ')}  —  board ${board}`)
@@ -729,6 +905,12 @@ export class MatchRunner {
     this.recordDecision(player, label, result)
     this.log('action', `${player.name} ${label}.`, player.id)
     history.push(`${seat.name} ${label}`)
+
+    // A fold redistributes everyone else's chances, so the numbers are
+    // recomputed *before* the snapshot that carries the fold. Refreshing after
+    // it left the new figures sitting in state with nothing to deliver them:
+    // the UI kept the pre-fold percentages until the next player acted.
+    if (result.action.kind === 'fold' && this.live.showEquity) table.refreshEquity()
 
     this.pushSnapshot()
     await this.beat()

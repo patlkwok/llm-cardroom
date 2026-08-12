@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   defaultSettings,
+  GAMES,
   type DecisionRecord,
   type KeyStorageKind,
   type LogEntry,
@@ -146,16 +147,14 @@ export function App(): React.JSX.Element {
     }
   }
 
-  // Poker seats arrive at a hand boundary, so a just-added model is not yet
-  // seated and its setup stays editable. Blackjack seats its player at once.
+  // Seats arrive at a round boundary in both games, so a just-added model is
+  // not yet seated and its setup stays editable until it is dealt in.
   const seatedPlayerIds =
     settings.game === 'poker'
       ? (snapshot?.poker?.seats.map((seat) => seat.id) ?? [])
-      : settings.players.map((player) => player.id)
+      : (snapshot?.blackjack?.players.map((player) => player.id) ?? [])
 
   const activePlayers = settings.players
-  const blackjackPlayer = activePlayers[0]
-  const blackjackThinking = blackjackPlayer ? Boolean(thinking[blackjackPlayer.id]) : false
 
   return (
     <div className="app">
@@ -194,8 +193,7 @@ export function App(): React.JSX.Element {
           {settings.game === 'blackjack' ? (
             <BlackjackView
               state={snapshot?.blackjack ?? emptyBlackjackState(settings)}
-              player={blackjackPlayer}
-              thinking={blackjackThinking}
+              thinking={thinking}
               rules={settings.blackjack}
             />
           ) : (
@@ -239,17 +237,17 @@ function StatusBar({
     error: 'Error'
   }
   const cost = snapshot?.stats.reduce((sum, s) => sum + s.costUsd, 0) ?? 0
-  const counter =
+  const number =
     settings.game === 'blackjack'
-      ? `Round ${snapshot?.blackjack?.roundNumber ?? 0}`
-      : `Hand ${snapshot?.poker?.handNumber ?? 0}`
+      ? (snapshot?.blackjack?.roundNumber ?? 0)
+      : (snapshot?.poker?.handNumber ?? 0)
+  const game = GAMES[settings.game]
+  const counter = `${game.roundNoun.replace(/^./, (c) => c.toUpperCase())} ${number}`
 
   return (
     <header className="statusbar">
       <span className={`status-pill status-${status}`}>{label[status] ?? status}</span>
-      <span className="status-game">
-        {settings.game === 'blackjack' ? 'Blackjack' : "No-Limit Hold'em"}
-      </span>
+      <span className="status-game">{game.label}</span>
       <span className="status-counter">{counter}</span>
       {cost > 0 && <span className="status-cost">${cost.toFixed(4)} spent</span>}
       {snapshot?.errorText && <span className="status-error">{snapshot.errorText}</span>}
@@ -257,28 +255,38 @@ function StatusBar({
   )
 }
 
-function emptyBlackjackState(settings: MatchSettings): MatchSnapshot['blackjack'] & object {
+function emptyBlackjackState(settings: MatchSettings): NonNullable<MatchSnapshot['blackjack']> {
   return {
     phase: 'idle',
     roundNumber: 0,
-    bankroll: settings.blackjack.startingBankroll,
     baseBet: settings.blackjack.baseBet,
     shoeRemaining: settings.blackjack.deckCount * 52,
     shoeJustShuffled: false,
-    hands: [],
-    activeHandIndex: 0,
+    players: settings.players.map((player, index) => ({
+      id: player.id,
+      name: player.name,
+      modelId: player.modelId,
+      seatIndex: index,
+      bankroll: settings.blackjack.startingBankroll,
+      hands: [],
+      activeHandIndex: 0,
+      insuranceOffer: 0,
+      insuranceBet: 0,
+      sessionNet: 0,
+      lastRoundNet: 0,
+      roundsPlayed: 0,
+      handsWon: 0,
+      handsLost: 0,
+      handsPushed: 0,
+      blackjacks: 0,
+      busts: 0,
+      busted: false
+    })),
+    activePlayerIndex: -1,
     dealerCards: [],
     dealerHoleHidden: true,
     insuranceOffered: false,
-    insuranceBet: 0,
-    sessionNet: 0,
-    lastRoundNet: 0,
-    roundsPlayed: 0,
-    handsWon: 0,
-    handsLost: 0,
-    handsPushed: 0,
-    blackjacks: 0,
-    busts: 0
+    roundsPlayed: 0
   }
 }
 

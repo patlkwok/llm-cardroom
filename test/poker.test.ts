@@ -228,6 +228,78 @@ test('all-in for less creates a side pot the short stack cannot win', () => {
   }
 })
 
+test('one seat can win both pots, but never more than it could cover', () => {
+  // Winning a main pot *and* a side pot is correct play, not a bug: a seat
+  // eligible for every layer that also holds the best hand takes the lot. What
+  // would be a bug is a seat winning chips it could not have covered — the
+  // all-in cap. From each opponent you can only win as much as you put in
+  // yourself, so that cap is what this asserts.
+  let sawOneSeatTakeTwoPots = false
+  let sawMultiplePots = false
+
+  for (let seed = 0; seed < 120; seed++) {
+    const table = makeTable(3 + (seed % 3), { startingStack: 1000 })
+    // Uneven stacks are what produce side pots once everyone gets it in.
+    table.state.seats.forEach((seat, i) => {
+      seat.stack = 100 * (i + 1) + (seed % 7) * 10
+    })
+    table.startHand()
+
+    let step: PokerStep = table.step()
+    let payout: Extract<PokerStep, { kind: 'payout' }> | null = null
+    let guard = 0
+    while (step.kind !== 'handComplete' && guard++ < 200) {
+      if (step.kind === 'await') {
+        const legal = table.legalActions()
+        // Everyone gets it in; short stacks call off what they have.
+        if (legal.canRaise) table.applyAction({ kind: 'raise', amount: legal.maxRaiseTo })
+        else table.applyAction({ kind: legal.canCheck ? 'check' : 'call' })
+      }
+      if (step.kind === 'payout') payout = step
+      step = table.step()
+    }
+    assert.ok(payout, `hand ${seed} should reach a payout`)
+
+    const committed = new Map(table.state.seats.map((s) => [s.id, s.totalCommitted]))
+    if (table.state.sidePots.length > 1) sawMultiplePots = true
+
+    // Every award goes to a seat actually eligible for that layer.
+    for (const award of payout.awards) {
+      const pot = table.state.sidePots[award.potIndex]
+      assert.ok(
+        pot.eligibleSeatIds.includes(award.seatId),
+        `${award.seatName} was paid from a pot it is not eligible for`
+      )
+    }
+
+    // The all-in cap, per seat.
+    for (const seat of table.state.seats) {
+      if (seat.wonThisHand === 0) continue
+      const mine = committed.get(seat.id) as number
+      const cap = [...committed.values()].reduce((sum, theirs) => sum + Math.min(theirs, mine), 0)
+      assert.ok(
+        seat.wonThisHand <= cap,
+        `${seat.name} won ${seat.wonThisHand} but could only cover ${cap}`
+      )
+    }
+
+    // Did somebody scoop more than one layer? That is the case being asked about.
+    const potsPerSeat = new Map<string, Set<number>>()
+    for (const award of payout.awards) {
+      const pots = potsPerSeat.get(award.seatId) ?? new Set<number>()
+      pots.add(award.potIndex)
+      potsPerSeat.set(award.seatId, pots)
+    }
+    if ([...potsPerSeat.values()].some((pots) => pots.size > 1)) sawOneSeatTakeTwoPots = true
+  }
+
+  assert.ok(sawMultiplePots, 'the scenario should produce side pots')
+  assert.ok(
+    sawOneSeatTakeTwoPots,
+    'a seat eligible for every layer should sometimes win them all — that is the rule'
+  )
+})
+
 test('chips are conserved across many randomised hands', () => {
   for (let seed = 0; seed < 60; seed++) {
     const playerCount = 2 + (seed % 7)

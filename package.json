@@ -1,7 +1,7 @@
 {
   "name": "llm-cardroom",
   "productName": "LLM Cardroom",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Watch LLMs play Blackjack and No-Limit Texas Hold'em",
   "main": "./out/main/index.js",
   "author": "llm-cardroom",

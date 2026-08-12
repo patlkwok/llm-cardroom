@@ -1,6 +1,8 @@
 import { cardCode } from '../../shared/cards.ts'
 import type {
   BlackjackAction,
+  BlackjackHand,
+  BlackjackPlayer,
   BlackjackRules,
   BlackjackState,
   PokerAction,
@@ -22,12 +24,21 @@ const NOTATION =
 
 /* -------------------------------------------------------------- blackjack */
 
-export function blackjackSystemPrompt(rules: BlackjackRules): string {
+export function blackjackSystemPrompt(rules: BlackjackRules, tableSize = 1): string {
   const lines = [
-    'You are a skilled blackjack player seated at a casino table, playing against the dealer.',
+    tableSize > 1
+      ? `You are a skilled blackjack player at a casino table with ${tableSize - 1} other ` +
+        'players. Everyone plays against the dealer, never against each other.'
+      : 'You are a skilled blackjack player seated at a casino table, playing against the dealer.',
     '',
     'House rules:',
     `- ${rules.deckCount}-deck shoe, reshuffled roughly three quarters of the way through.`,
+    ...(tableSize > 1
+      ? [
+          '- Every seat is dealt from the same shoe, and all player cards are dealt FACE UP.',
+          "  You are shown the other players' cards; use them to judge what is left in the shoe."
+        ]
+      : []),
     `- The dealer ${rules.dealerHitsSoft17 ? 'hits' : 'stands on'} soft 17.`,
     `- A natural blackjack pays ${rules.blackjackPayout === 1.5 ? '3:2' : `${rules.blackjackPayout}:1`}.`,
     '- You may double down on your first two cards' +
@@ -48,30 +59,57 @@ export function blackjackSystemPrompt(rules: BlackjackRules): string {
   return lines.join('\n')
 }
 
+function handSummary(hand: BlackjackHand): string {
+  const status = hand.status === 'active' ? 'to act' : hand.status
+  return `${hand.cards.map(cardCode).join(' ')} (${describeValue(hand.cards)}) — bet ${hand.bet}, ${status}`
+}
+
+/**
+ * The other seats' cards. They are dealt face up at a shoe game, and showing
+ * them is a deliberate departure from the poker rule that a model sees only its
+ * own cards: nobody at blackjack is hiding anything, and what the other seats
+ * have burned is the whole reason for running several models on one shoe.
+ */
+function otherSeats(state: BlackjackState, player: BlackjackPlayer): string[] {
+  const others = state.players.filter((p) => p.id !== player.id && p.hands.length > 0)
+  if (others.length === 0) return []
+
+  const lines = ['', 'Other players at this table (all cards are dealt face up):']
+  for (const other of others) {
+    if (other.hands.length === 1) {
+      lines.push(`- ${other.name}: ${handSummary(other.hands[0])}`)
+    } else {
+      lines.push(`- ${other.name}, split into ${other.hands.length} hands:`)
+      for (const hand of other.hands) lines.push(`    ${handSummary(hand)}`)
+    }
+  }
+  return lines
+}
+
 export function blackjackUserPrompt(
   state: BlackjackState,
+  player: BlackjackPlayer,
   legal: BlackjackAction[]
 ): string {
-  const hand = state.hands[state.activeHandIndex]
+  const hand = player.hands[player.activeHandIndex]
   const upcard = state.dealerCards[0]
   const lines: string[] = []
 
-  lines.push(`Round ${state.roundNumber}. Your bankroll: ${state.bankroll} chips.`)
+  lines.push(`Round ${state.roundNumber}. Your bankroll: ${player.bankroll} chips.`)
   lines.push(`Cards left in the shoe: about ${state.shoeRemaining}.`)
   if (state.shoeJustShuffled) lines.push('The shoe was just reshuffled, so no cards have been seen yet.')
   lines.push('')
   lines.push(`Dealer shows: ${cardCode(upcard)}`)
 
-  if (state.hands.length > 1) {
+  if (player.hands.length > 1) {
     lines.push('')
-    lines.push(`You have split into ${state.hands.length} hands:`)
-    state.hands.forEach((h, i) => {
-      const marker = i === state.activeHandIndex ? '>' : ' '
-      const status = h.status === 'active' ? 'to act' : h.status
-      lines.push(`${marker} Hand ${i + 1}: ${h.cards.map(cardCode).join(' ')} (${describeValue(h.cards)}) — bet ${h.bet}, ${status}`)
+    lines.push(`You have split into ${player.hands.length} hands:`)
+    player.hands.forEach((h, i) => {
+      const marker = i === player.activeHandIndex ? '>' : ' '
+      lines.push(`${marker} Hand ${i + 1}: ${handSummary(h)}`)
     })
     lines.push('')
-    lines.push(`You are deciding for hand ${state.activeHandIndex + 1}.`)
+    lines.push(`You are deciding for hand ${player.activeHandIndex + 1}.`)
   } else {
     lines.push(`Your hand: ${hand.cards.map(cardCode).join(' ')} (${describeValue(hand.cards)})`)
     lines.push(`Your bet: ${hand.bet} chips.`)
@@ -81,6 +119,8 @@ export function blackjackUserPrompt(
   if (soft && total <= 21) {
     lines.push(`That is a soft ${total}: it cannot bust on the next card.`)
   }
+
+  lines.push(...otherSeats(state, player))
 
   lines.push('')
   lines.push(`Legal actions: ${legal.join(', ')}`)
@@ -97,25 +137,33 @@ export function blackjackUserPrompt(
 
 export function buildBlackjackPrompt(
   state: BlackjackState,
+  player: BlackjackPlayer,
   legal: BlackjackAction[],
   rules: BlackjackRules
 ): Prompt {
-  return { system: blackjackSystemPrompt(rules), user: blackjackUserPrompt(state, legal) }
+  return {
+    system: blackjackSystemPrompt(rules, state.players.length),
+    user: blackjackUserPrompt(state, player, legal)
+  }
 }
 
 /** Asked when the dealer's upcard is an ace, before the dealer peeks. */
 export function buildBlackjackInsurancePrompt(
   state: BlackjackState,
+  player: BlackjackPlayer,
   cost: number,
   rules: BlackjackRules
 ): Prompt {
-  const hand = state.hands[0]
+  const hand = player.hands[0]
   const lines: string[] = []
 
   lines.push(`Round ${state.roundNumber}. The dealer's upcard is an ace.`)
   lines.push('')
   lines.push(`Your hand: ${hand.cards.map(cardCode).join(' ')} (${describeValue(hand.cards)})`)
-  lines.push(`Your stake: ${hand.bet} chips. Bankroll: ${state.bankroll} chips.`)
+  lines.push(`Your stake: ${hand.bet} chips. Bankroll: ${player.bankroll} chips.`)
+  // The face-up table matters most here: every ten already out is one that
+  // cannot be under the ace.
+  lines.push(...otherSeats(state, player))
   lines.push('')
   lines.push(`Insurance costs ${cost} chips, half your stake.`)
   lines.push('It pays 2:1 if the dealer has blackjack, and is lost otherwise.')
@@ -126,7 +174,7 @@ export function buildBlackjackInsurancePrompt(
   lines.push('Reply with a single JSON object and nothing else:')
   lines.push('{"reasoning": "<one short sentence>", "insurance": true or false}')
 
-  return { system: blackjackSystemPrompt(rules), user: lines.join('\n') }
+  return { system: blackjackSystemPrompt(rules, state.players.length), user: lines.join('\n') }
 }
 
 export function parseBlackjackInsuranceReply(text: string): ParseOutcome<boolean> {
@@ -157,24 +205,25 @@ export function parseBlackjackInsuranceReply(text: string): ParseOutcome<boolean
 /** Asked before the deal when the model sizes its own wagers. */
 export function buildBlackjackBetPrompt(
   state: BlackjackState,
+  player: BlackjackPlayer,
   limits: { min: number; max: number },
   rules: BlackjackRules
 ): Prompt {
   const lines: string[] = []
   lines.push(`You are about to play round ${state.roundNumber + 1}. Decide how much to wager.`)
   lines.push('')
-  lines.push(`Bankroll: ${state.bankroll} chips.`)
+  lines.push(`Bankroll: ${player.bankroll} chips.`)
   lines.push(`Table minimum: ${limits.min}. Most you may wager: ${limits.max} (your whole bankroll).`)
 
-  if (state.roundsPlayed > 0) {
+  if (player.roundsPlayed > 0) {
     lines.push('')
     lines.push(
-      `So far: ${state.roundsPlayed} rounds, ${state.handsWon} won, ${state.handsLost} lost, ` +
-        `${state.handsPushed} pushed, ${state.blackjacks} blackjacks, ${state.busts} busts.`
+      `So far: ${player.roundsPlayed} rounds, ${player.handsWon} won, ${player.handsLost} lost, ` +
+        `${player.handsPushed} pushed, ${player.blackjacks} blackjacks, ${player.busts} busts.`
     )
-    lines.push(`Net for the session: ${state.sessionNet >= 0 ? '+' : ''}${state.sessionNet} chips.`)
-    if (state.lastRoundNet !== 0) {
-      lines.push(`Last round: ${state.lastRoundNet > 0 ? 'won' : 'lost'} ${Math.abs(state.lastRoundNet)}.`)
+    lines.push(`Net for the session: ${player.sessionNet >= 0 ? '+' : ''}${player.sessionNet} chips.`)
+    if (player.lastRoundNet !== 0) {
+      lines.push(`Last round: ${player.lastRoundNet > 0 ? 'won' : 'lost'} ${Math.abs(player.lastRoundNet)}.`)
     }
   }
 
@@ -189,7 +238,7 @@ export function buildBlackjackBetPrompt(
   lines.push('{"reasoning": "<one short sentence>", "bet": <whole number of chips>}')
 
   return {
-    system: blackjackSystemPrompt(rules),
+    system: blackjackSystemPrompt(rules, state.players.length),
     user: lines.join('\n')
   }
 }

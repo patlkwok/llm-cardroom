@@ -12,12 +12,32 @@ afterEach(() => {
 interface Capture {
   events: MatchEvent[]
   prompts: string[]
+  systemPrompts: string[]
   emit: (event: MatchEvent) => void
 }
 
 function capture(): Capture {
   const events: MatchEvent[] = []
-  return { events, prompts: [], emit: (event) => events.push(event) }
+  return { events, prompts: [], systemPrompts: [], emit: (event) => events.push(event) }
+}
+
+/** Every log line the runner emitted, in order. */
+function logTexts(sink: Capture): string[] {
+  return sink.events.filter((e) => e.type === 'log').map((e) => (e.type === 'log' ? e.entry.text : ''))
+}
+
+/** The deal lines that state a stake, ignoring round headers and reveals. */
+function betLines(sink: Capture): string[] {
+  return sink.events
+    .filter((e) => e.type === 'log' && e.entry.level === 'deal')
+    .map((e) => (e.type === 'log' ? e.entry.text : ''))
+    .filter((text) => text.includes(' bets '))
+}
+
+function finalSnapshot(sink: Capture) {
+  const final = sink.events.filter((e) => e.type === 'snapshot').pop()
+  assert.equal(final?.type, 'snapshot')
+  return final.snapshot
 }
 
 /**
@@ -35,6 +55,7 @@ function mockOpenRouter(
     const lastUser = [...body.messages].reverse().find((m) => m.role === 'user')
     const prompt = lastUser?.content ?? ''
     sink?.prompts.push(prompt)
+    sink?.systemPrompts.push(body.messages.find((m) => m.role === 'system')?.content ?? '')
 
     return {
       ok: true,
@@ -106,6 +127,23 @@ function blackjackSettings(overrides: Partial<MatchSettings> = {}): MatchSetting
   }
 }
 
+/** A blackjack table with several models sharing one shoe. */
+function multiBlackjackSettings(
+  seatCount: number,
+  overrides: Partial<MatchSettings> = {}
+): MatchSettings {
+  return blackjackSettings({
+    players: Array.from({ length: seatCount }, (_, i) => ({
+      id: `p${i}`,
+      name: `Seat${i}`,
+      modelId: 'test/model',
+      modelName: 'Test',
+      reasoningEffort: 'default' as const
+    })),
+    ...overrides
+  })
+}
+
 function pokerSettings(playerCount: number, overrides: Partial<MatchSettings> = {}): MatchSettings {
   const base = defaultSettings()
   return {
@@ -143,12 +181,9 @@ test('a blackjack session runs end to end against a mocked model', async () => {
   const bj = final.snapshot.blackjack
   assert.ok(bj)
   assert.equal(bj.roundsPlayed, 8, 'played the requested number of rounds')
-  assert.equal(
-    bj.handsWon + bj.handsLost + bj.handsPushed > 0,
-    true,
-    'hands were scored'
-  )
-  assert.equal(bj.bankroll, 1000 + bj.sessionNet, 'bankroll matches the session result')
+  const seat = bj.players[0]
+  assert.equal(seat.handsWon + seat.handsLost + seat.handsPushed > 0, true, 'hands were scored')
+  assert.equal(seat.bankroll, 1000 + seat.sessionNet, 'bankroll matches the session result')
 
   const decisions = sink.events.filter((e) => e.type === 'decision')
   assert.ok(decisions.length > 0, 'the model was asked to act')
@@ -177,6 +212,253 @@ test('blackjack prompts describe the hand the model must play', async () => {
     assert.match(prompt, /Dealer shows: /, 'the upcard is stated')
     assert.match(prompt, /Your bankroll: [\d.]+/, 'the bankroll is stated')
   }
+})
+
+/* ------------------------------------------------- multi-seat blackjack */
+
+test('several models share one blackjack shoe and one dealer', async () => {
+  const sink = capture()
+  mockOpenRouter(respondFromPrompt, sink)
+
+  const settings = multiBlackjackSettings(4, { maxRounds: 6 })
+  await new MatchRunner(settings, 'test-key', sink.emit).run()
+
+  const snapshot = finalSnapshot(sink)
+  assert.equal(snapshot.status, 'finished')
+  const bj = snapshot.blackjack
+  assert.ok(bj)
+  assert.equal(bj.players.length, 4)
+  assert.equal(bj.roundsPlayed, 6)
+
+  for (const seat of bj.players) {
+    assert.equal(
+      seat.bankroll,
+      1000 + seat.sessionNet,
+      `${seat.name}'s bankroll should equal its start plus its own net`
+    )
+    assert.equal(seat.roundsPlayed, 6, `${seat.name} played every round`)
+  }
+
+  // Each seat is dealt its own hand in every round, and the dealer plays once.
+  const dealsPerRound = new Map<string, number>()
+  for (const text of betLines(sink)) {
+    const name = text.split(' bets ')[0]
+    dealsPerRound.set(name, (dealsPerRound.get(name) ?? 0) + 1)
+  }
+  assert.deepEqual([...dealsPerRound.values()], [6, 6, 6, 6])
+  assert.equal(
+    logTexts(sink).filter((t) => t.startsWith('Dealer ')).length,
+    6,
+    'one dealer hand a round, not one per seat'
+  )
+
+  // Every seat gets its own decisions and its own usage row.
+  assert.equal(snapshot.stats.length, 4)
+  for (const stat of snapshot.stats) assert.ok(stat.decisions > 0, 'every seat was asked to act')
+})
+
+test('a blackjack model is shown the other seats but only plays its own hand', async () => {
+  const sink = capture()
+  mockOpenRouter(respondFromPrompt, sink)
+
+  await new MatchRunner(
+    multiBlackjackSettings(3, { maxRounds: 4 }),
+    'test-key',
+    sink.emit
+  ).run()
+
+  const playPrompts = sink.prompts.filter((p) => p.includes('Legal actions:'))
+  assert.ok(playPrompts.length > 0)
+  for (const prompt of playPrompts) {
+    assert.equal((prompt.match(/Your hand:|You have split into/g) ?? []).length, 1, 'one hand is yours')
+    assert.match(prompt, /Other players at this table \(all cards are dealt face up\):/)
+
+    // The face-up block must actually carry cards — that is the whole point of
+    // seating several models on one shoe.
+    const block = prompt.split('Other players at this table')[1].split('\n\n')[0]
+    assert.ok(
+      (block.match(/\b[2-9TJQKA][cdhs]\b/g) ?? []).length >= 2,
+      `the other seats' cards should be listed: ${block}`
+    )
+  }
+
+  assert.ok(
+    sink.systemPrompts.some((p) => p.includes('all player cards are dealt FACE UP')),
+    'the rule is stated in force, not left to be inferred'
+  )
+})
+
+test('a single-seat blackjack table lists no other players', async () => {
+  const sink = capture()
+  mockOpenRouter(respondFromPrompt, sink)
+
+  await new MatchRunner(blackjackSettings({ maxRounds: 3 }), 'test-key', sink.emit).run()
+
+  for (const prompt of sink.prompts) {
+    assert.ok(!prompt.includes('Other players at this table'), 'nobody else is at the table')
+  }
+  for (const prompt of sink.systemPrompts) {
+    assert.ok(!prompt.includes('FACE UP'), 'and no face-up rule to explain')
+  }
+})
+
+test('every seat is offered insurance in its own right', async () => {
+  const sink = capture()
+  mockOpenRouter(alwaysInsures, sink)
+
+  const settings = multiBlackjackSettings(3, { maxRounds: 60 })
+  settings.blackjack = { ...settings.blackjack, offerInsurance: true, startingBankroll: 100000 }
+  await new MatchRunner(settings, 'test-key', sink.emit).run()
+
+  const texts = logTexts(sink)
+  const taken = texts.filter((t) => /takes insurance for [\d.]+ chips/.test(t))
+  const settled = texts.filter((t) => /Insurance (pays 2:1|loses)/.test(t))
+  assert.ok(taken.length > 0, 'insurance should come up over 60 rounds')
+  assert.equal(settled.length, taken.length, 'every side bet settles exactly once')
+
+  // An ace up offers the bet to all three seats, not just the first.
+  const names = new Set(taken.map((t) => t.split(' takes insurance')[0]))
+  assert.equal(names.size, 3, `every seat bought insurance at some point, saw ${[...names]}`)
+
+  const bj = finalSnapshot(sink).blackjack
+  assert.ok(bj)
+  for (const seat of bj.players) {
+    assert.equal(seat.bankroll, 100000 + seat.sessionNet, `${seat.name} balances`)
+  }
+})
+
+test('a model can join a blackjack table mid-match, from the next round', async () => {
+  const sink = capture()
+  mockOpenRouter(respondFromPrompt, sink)
+
+  const settings = multiBlackjackSettings(2, { maxRounds: 0, stepDelayMs: 15 })
+  const runner = new MatchRunner(settings, 'test-key', sink.emit)
+  const running = runner.run()
+
+  await new Promise((r) => setTimeout(r, 300))
+  runner.applyLiveSettings({
+    ...settings,
+    players: [
+      ...settings.players,
+      { id: 'late', name: 'Latecomer', modelId: 'test/model', modelName: 'Test', reasoningEffort: 'default' as const }
+    ]
+  })
+  // Adding a model pauses the table so its setup can be adjusted first.
+  await new Promise((r) => setTimeout(r, 150))
+  const paused = finalSnapshot(sink)
+  assert.equal(paused.status, 'paused', 'the table waits for setup')
+  assert.ok(!paused.blackjack?.players.some((p) => p.id === 'late'), 'not seated yet')
+
+  runner.resume()
+  await new Promise((r) => setTimeout(r, 500))
+  runner.stop()
+  await running
+
+  const texts = logTexts(sink)
+  const joinIndex = texts.findIndex((t) => t.includes('Latecomer joins the table with 1000 chips'))
+  assert.ok(joinIndex >= 0, 'the join is announced')
+  // The seat count may only change between rounds, never during one.
+  assert.match(texts[joinIndex + 1] ?? '', /^Round \d+:/, 'the join lands right before a new round')
+
+  const bj = finalSnapshot(sink).blackjack
+  assert.ok(bj)
+  assert.equal(bj.players.length, 3)
+  const late = bj.players.find((p) => p.id === 'late')
+  assert.ok(late)
+  assert.ok(late.roundsPlayed > 0, 'and it actually played')
+  assert.ok(late.roundsPlayed < bj.roundsPlayed, 'but only from the round it joined')
+})
+
+test('a blackjack model can be removed mid-match and takes its chips', async () => {
+  const sink = capture()
+  mockOpenRouter(respondFromPrompt, sink)
+
+  const settings = multiBlackjackSettings(3, { maxRounds: 0, stepDelayMs: 15 })
+  const runner = new MatchRunner(settings, 'test-key', sink.emit)
+  const running = runner.run()
+
+  await new Promise((r) => setTimeout(r, 300))
+  runner.applyLiveSettings({ ...settings, players: settings.players.slice(0, 2) })
+  await new Promise((r) => setTimeout(r, 500))
+  runner.stop()
+  await running
+
+  assert.ok(
+    logTexts(sink).some((t) => /Seat2 leaves the table, taking [\d.]+ chips/.test(t)),
+    'the departure is announced with the chips taken'
+  )
+
+  const bj = finalSnapshot(sink).blackjack
+  assert.ok(bj)
+  assert.equal(bj.players.length, 2)
+  assert.ok(!bj.players.some((p) => p.id === 'p2'))
+})
+
+test('the last blackjack seat leaving closes the table', async () => {
+  const sink = capture()
+  mockOpenRouter(respondFromPrompt, sink)
+
+  const settings = multiBlackjackSettings(2, { maxRounds: 0, stepDelayMs: 15 })
+  const runner = new MatchRunner(settings, 'test-key', sink.emit)
+  const running = runner.run()
+
+  await new Promise((r) => setTimeout(r, 250))
+  runner.applyLiveSettings({ ...settings, players: [] })
+  await running
+
+  assert.ok(
+    logTexts(sink).some((t) => t.includes('Nobody is left at the table')),
+    'the table closes rather than dealing to an empty felt'
+  )
+  assert.equal(finalSnapshot(sink).status, 'finished')
+})
+
+test('a blackjack seat that busts out is announced once, not every later round', async () => {
+  const sink = capture()
+  // Betting the whole bankroll every round empties at least one seat quickly,
+  // with plenty of rounds still to come — which is when a per-round scan over
+  // current state starts repeating itself.
+  mockOpenRouter((prompt) => {
+    if (prompt.includes('Decide how much to wager')) {
+      const max = Number(prompt.match(/Most you may wager: (\d+)/)?.[1] ?? 25)
+      return JSON.stringify({ reasoning: 'All in.', bet: max })
+    }
+    return respondFromPrompt(prompt)
+  }, sink)
+
+  const settings = multiBlackjackSettings(3, { maxRounds: 40 })
+  settings.blackjack = { ...settings.blackjack, modelChoosesBet: true, startingBankroll: 100 }
+  await new MatchRunner(settings, 'test-key', sink.emit).run()
+
+  const outs = logTexts(sink).filter((t) => t.includes('is out of chips'))
+  assert.ok(outs.length > 0, 'the scenario should bust someone out')
+
+  const counts = new Map<string, number>()
+  for (const text of outs) {
+    const name = text.split(' is out of chips')[0]
+    counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+  for (const [name, n] of counts) {
+    assert.equal(n, 1, `"${name} is out of chips" was logged ${n} times`)
+  }
+
+  // A seat that is out stays out. It keeps showing the hand it went broke on
+  // until the next deal clears the felt, so what proves it was not dealt in
+  // again is a hand with no outcome — one still being played.
+  const out = new Set<string>()
+  for (const event of sink.events) {
+    if (event.type !== 'snapshot' || !event.snapshot.blackjack) continue
+    for (const seat of event.snapshot.blackjack.players) {
+      if (out.has(seat.id)) {
+        assert.ok(
+          seat.hands.every((hand) => hand.outcome !== undefined),
+          `${seat.name} was dealt a live hand after busting out`
+        )
+      }
+      if (seat.busted) out.add(seat.id)
+    }
+  }
+  assert.ok(out.size > 0, 'at least one seat should have gone out')
 })
 
 test('a poker match runs end to end and conserves chips', async () => {
@@ -231,6 +513,46 @@ test('poker prompts give each model its own cards and the shared board', async (
   for (const prompt of sink.prompts) {
     assert.equal((prompt.match(/Your cards:/g) ?? []).length, 1)
   }
+})
+
+test('a fold redistributes the win probabilities in the very same snapshot', async () => {
+  const sink = capture()
+  // The first player to face a bet folds, so a fold lands early in the hand
+  // with two contenders still to divide the equity between them.
+  mockOpenRouter((prompt) => {
+    const line = prompt.split('\n').find((l) => l.startsWith('Legal actions:')) ?? ''
+    if (line.includes('call')) return JSON.stringify({ reasoning: 'Not worth it.', action: 'fold' })
+    return JSON.stringify({ reasoning: 'Free card.', action: 'check' })
+  }, sink)
+
+  const settings = pokerSettings(3, { maxRounds: 1, showEquity: true, stepDelayMs: 0 })
+  await new MatchRunner(settings, 'test-key', sink.emit).run()
+
+  const states = sink.events
+    .filter((e) => e.type === 'snapshot')
+    .map((e) => (e.type === 'snapshot' ? e.snapshot.poker : undefined))
+
+  // The first frame the operator sees with somebody folded must already show
+  // the redistribution. Refreshing after the push left the new numbers stranded
+  // in state until the *next* player acted.
+  const afterFold = states.find(
+    (poker) => poker?.phase === 'hand' && poker.seats.some((seat) => seat.folded)
+  )
+  assert.ok(afterFold, 'somebody should fold in a hand where every call is refused')
+
+  const live = afterFold.seats.filter((seat) => !seat.folded)
+  for (const seat of afterFold.seats) {
+    if (seat.folded) {
+      assert.equal(seat.equity, undefined, `${seat.name} folded but still shows a win probability`)
+    } else {
+      assert.ok(seat.equity !== undefined, `${seat.name} is live but shows no win probability`)
+    }
+  }
+  const sum = live.reduce((total, seat) => total + (seat.equity ?? 0), 0)
+  assert.ok(
+    Math.abs(sum - 1) < 0.02,
+    `the remaining seats should split the whole pot's chances, saw ${sum.toFixed(3)}`
+  )
 })
 
 test('a model that never returns valid JSON falls back instead of stalling', async () => {
@@ -475,9 +797,9 @@ test('an out-of-range wager is clamped rather than rejected', async () => {
   settings.blackjack = { ...settings.blackjack, modelChoosesBet: true }
   await new MatchRunner(settings, 'test-key', sink.emit).run()
 
-  const deal = sink.events.find((e) => e.type === 'log' && e.entry.level === 'deal')
-  assert.equal(deal?.type, 'log')
-  assert.match(deal.entry.text, /bets 1000\b/, 'clamped to the whole bankroll')
+  const deals = betLines(sink)
+  assert.equal(deals.length, 1)
+  assert.match(deals[0], /bets 1000\b/, 'clamped to the whole bankroll')
 })
 
 test('a model that cannot size a bet falls back to the table minimum', async () => {
@@ -541,7 +863,11 @@ test('the model is asked about insurance and the side bet settles', async () => 
   assert.equal(final?.type, 'snapshot')
   const bj = final.snapshot.blackjack
   assert.ok(bj)
-  assert.equal(bj.bankroll, 100000 + bj.sessionNet, 'insurance is included in the accounting')
+  assert.equal(
+    bj.players[0].bankroll,
+    100000 + bj.players[0].sessionNet,
+    'insurance is included in the accounting'
+  )
 })
 
 test('a model that always insures sees both outcomes, and the books balance', async () => {
@@ -575,7 +901,11 @@ test('a model that always insures sees both outcomes, and the books balance', as
   const bj = final.snapshot.blackjack
   assert.ok(bj)
   assert.equal(bj.roundsPlayed, 400)
-  assert.equal(bj.bankroll, 1_000_000 + bj.sessionNet, 'insurance included in the accounting')
+  assert.equal(
+    bj.players[0].bankroll,
+    1_000_000 + bj.players[0].sessionNet,
+    'insurance included in the accounting'
+  )
 
   // Insurance decisions are recorded as their own entries in the feed.
   const insuranceDecisions = sink.events.filter(
@@ -717,9 +1047,7 @@ test('adding a model mid-match pauses so its effort can still be set', async () 
   assert.equal(snap?.type, 'snapshot')
   assert.equal(snap.snapshot.status, 'paused', 'the table waits for setup')
   assert.ok(
-    sink.events.some(
-      (e) => e.type === 'log' && e.entry.text.includes('Set their reasoning effort now')
-    ),
+    sink.events.some((e) => e.type === 'log' && e.entry.text.includes('Set them up now')),
     'the operator is told why'
   )
   // Not seated yet, so nothing has been dealt to the newcomer.
@@ -748,6 +1076,122 @@ test('adding a model mid-match pauses so its effort can still be set', async () 
     ),
     'the effort is noted when it sits down'
   )
+})
+
+test('a model waiting to join can still be renamed, and joins under the new name', async () => {
+  const sink = capture()
+  mockOpenRouter(respondFromPrompt, sink)
+
+  const settings = pokerSettings(3, { maxRounds: 0, stepDelayMs: 15 })
+  const runner = new MatchRunner(settings, 'test-key', sink.emit)
+  const running = runner.run()
+
+  await new Promise((r) => setTimeout(r, 300))
+  const withNewcomer = {
+    ...settings,
+    players: [
+      ...settings.players,
+      { id: 'late', name: 'Placeholder', modelId: 'test/model', modelName: 'Test', reasoningEffort: 'default' as const }
+    ]
+  }
+  runner.applyLiveSettings(withNewcomer)
+  await new Promise((r) => setTimeout(r, 150))
+
+  // Renamed while it waits, which is exactly what the sidebar now allows.
+  runner.applyLiveSettings({
+    ...withNewcomer,
+    players: withNewcomer.players.map((p) =>
+      p.id === 'late' ? { ...p, name: 'Renamed Bot' } : p
+    )
+  })
+  runner.resume()
+  await new Promise((r) => setTimeout(r, 600))
+  runner.stop()
+  await running
+
+  const texts = logTexts(sink)
+  assert.ok(texts.some((t) => t.includes('Renamed Bot joins the table')), 'joins under the new name')
+  assert.ok(!texts.some((t) => t.includes('Placeholder joins the table')), 'and not under the old one')
+
+  const snapshot = finalSnapshot(sink)
+  const seat = snapshot.poker?.seats.find((s) => s.id === 'late')
+  assert.ok(seat, 'the newcomer took a seat')
+  assert.equal(seat.name, 'Renamed Bot', 'the felt shows the edited name')
+  assert.equal(
+    snapshot.players.find((p) => p.id === 'late')?.name,
+    'Renamed Bot',
+    'and so does the roster the UI reads back'
+  )
+})
+
+test('editing a model that is already waiting to join does not stop the table again', async () => {
+  const sink = capture()
+  mockOpenRouter(respondFromPrompt, sink)
+
+  // A slow pace keeps the hand running long enough to edit the newcomer after
+  // resuming but before the hand boundary seats it.
+  const settings = pokerSettings(3, { maxRounds: 0, stepDelayMs: 200 })
+  const runner = new MatchRunner(settings, 'test-key', sink.emit)
+  const running = runner.run()
+
+  await new Promise((r) => setTimeout(r, 500))
+  const withNewcomer = {
+    ...settings,
+    players: [
+      ...settings.players,
+      { id: 'late', name: 'Placeholder', modelId: 'test/model', modelName: 'Test', reasoningEffort: 'default' as const }
+    ]
+  }
+  runner.applyLiveSettings(withNewcomer)
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(finalSnapshot(sink).status, 'paused', 'arriving pauses the table once')
+
+  runner.resume()
+  await new Promise((r) => setTimeout(r, 50))
+  // An edit to a model already in the queue is not a fresh arrival. Pausing
+  // again here would stop the table dead on every keystroke of a rename.
+  runner.applyLiveSettings({
+    ...withNewcomer,
+    players: withNewcomer.players.map((p) =>
+      p.id === 'late' ? { ...p, name: 'Renamed' } : p
+    )
+  })
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(finalSnapshot(sink).status, 'running', 'editing it does not pause the table again')
+
+  runner.stop()
+  await running
+
+  const announcements = logTexts(sink).filter((t) => t.includes('will join next'))
+  assert.equal(announcements.length, 1, `announced once, saw ${announcements.length}`)
+})
+
+test("a seated model's name is fixed for the match", async () => {
+  const sink = capture()
+  mockOpenRouter(respondFromPrompt, sink)
+
+  const settings = pokerSettings(3, { maxRounds: 0, stepDelayMs: 15 })
+  const runner = new MatchRunner(settings, 'test-key', sink.emit)
+  const running = runner.run()
+
+  await new Promise((r) => setTimeout(r, 250))
+  // Try to rename everyone already dealt in. Their names are on the felt and
+  // all through the log, so they may not move.
+  runner.applyLiveSettings({
+    ...settings,
+    players: settings.players.map((p) => ({ ...p, name: `${p.name} renamed` }))
+  })
+  await new Promise((r) => setTimeout(r, 500))
+  runner.stop()
+  await running
+
+  const snapshot = finalSnapshot(sink)
+  for (const player of snapshot.players) {
+    assert.match(player.name, /^Bot\d$/, `${player.name} kept the name it sat down with`)
+  }
+  for (const seat of snapshot.poker?.seats ?? []) {
+    assert.match(seat.name, /^Bot\d$/, `${seat.name} kept the name it sat down with`)
+  }
 })
 
 test("a seated model's reasoning effort cannot be changed mid-match", async () => {
