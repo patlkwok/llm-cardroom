@@ -112,6 +112,9 @@ function pokerSettings(playerCount: number, overrides: Partial<MatchSettings> = 
     ...base,
     game: 'poker',
     stepDelayMs: 0,
+    // Equity is a few hundred milliseconds of real work per board change, which
+    // swamps a zero-delay test table. equity.test.ts covers it directly.
+    showEquity: false,
     maxRounds: 6,
     poker: { ...base.poker, startingStack: 500, smallBlind: 5, bigBlind: 10 },
     players: Array.from({ length: playerCount }, (_, i) => ({

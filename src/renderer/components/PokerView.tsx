@@ -59,10 +59,19 @@ export function PokerView({ state, thinking }: Props): React.JSX.Element {
           isActing={index === state.actingSeatIndex}
           thinking={Boolean(thinking[seat.id])}
           bigBlind={state.bigBlind}
+          showEquity={state.phase === 'hand'}
         />
       ))}
     </div>
   )
+}
+
+/** Keeps a live hand from ever reading a flat 0% or 100%. */
+function formatEquity(equity: number): string {
+  const percent = equity * 100
+  if (percent > 0 && percent < 1) return '<1%'
+  if (percent < 100 && percent > 99) return '>99%'
+  return `${Math.round(percent)}%`
 }
 
 function SeatBox({
@@ -71,7 +80,8 @@ function SeatBox({
   isButton,
   isActing,
   thinking,
-  bigBlind
+  bigBlind,
+  showEquity
 }: {
   seat: PokerSeat
   style: { left: string; top: string }
@@ -79,6 +89,7 @@ function SeatBox({
   isActing: boolean
   thinking: boolean
   bigBlind: number
+  showEquity: boolean
 }): React.JSX.Element {
   const classes = ['poker-seat']
   if (seat.folded && !seat.busted) classes.push('seat-folded')
@@ -114,7 +125,16 @@ function SeatBox({
         </div>
         <div className="seat-plate-bottom">
           <span className="seat-stack">{seat.busted ? 'eliminated' : `${seat.stack}`}</span>
-          {!seat.busted && <span className="seat-bb">{bigBlinds} BB</span>}
+          {/* Win probability while the hand is live, stack depth otherwise. The
+              two share a slot: equity is the more useful number moment to
+              moment, but big blinds are what explain a short stack shoving. At
+              showdown it is always 100/0, so it goes back to BB there. */}
+          {!seat.busted &&
+            (showEquity && seat.equity !== undefined ? (
+              <span className="seat-equity">{formatEquity(seat.equity)}</span>
+            ) : (
+              <span className="seat-bb">{bigBlinds} BB</span>
+            ))}
         </div>
         {seat.showdownHand && <div className="seat-showdown">{seat.showdownHand}</div>}
       </div>

@@ -149,8 +149,14 @@ async function main() {
 
     await win.click('.start-button')
     await waitForCounter(win, /Hand [1-9]/)
+
+    // Two frames, because the seat plates show different things: win
+    // probability while the hand is live, stack depth at showdown.
+    await win.waitForSelector('.seat-equity', { timeout: 90000 })
+    await shoot(win, '03-poker-hand.png')
+
     await win.waitForSelector('.seat-showdown', { timeout: 120000 })
-    await shoot(win, '03-poker-table.png')
+    await shoot(win, '04-poker-showdown.png')
     await stopMatch(win)
 
     console.log(`\nScreenshots written to ${OUT_DIR}`)

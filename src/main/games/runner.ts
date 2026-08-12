@@ -14,6 +14,7 @@ import type {
 } from '../../shared/types.ts'
 import { BlackjackTable, describeValue } from './blackjack.ts'
 import { PokerTable, type PokerStep } from './poker/engine.ts'
+import { uncapitalise } from './poker/handEval.ts'
 import { requestDecision } from './agent.ts'
 import {
   buildBlackjackBetPrompt,
@@ -52,6 +53,7 @@ export class MatchRunner {
    */
   private live: {
     stepDelayMs: number
+    showEquity: boolean
     maxRounds: number
     blackjackBaseBet: number
     modelChoosesBet: boolean
@@ -69,6 +71,7 @@ export class MatchRunner {
   ) {
     this.live = {
       stepDelayMs: settings.stepDelayMs,
+      showEquity: settings.showEquity,
       maxRounds: settings.maxRounds,
       blackjackBaseBet: settings.blackjack.baseBet,
       modelChoosesBet: settings.blackjack.modelChoosesBet
@@ -102,6 +105,7 @@ export class MatchRunner {
     const previousBet = this.live.blackjackBaseBet
     this.live = {
       stepDelayMs: Math.max(0, next.stepDelayMs),
+      showEquity: next.showEquity,
       maxRounds: Math.max(0, Math.round(next.maxRounds)),
       blackjackBaseBet: Math.max(1, Math.round(next.blackjack.baseBet)),
       modelChoosesBet: next.blackjack.modelChoosesBet
@@ -609,6 +613,10 @@ export class MatchRunner {
       }
 
       table.startHand()
+      // Equity moves only when the board changes or someone folds, never with
+      // the betting, so it is refreshed at exactly those three points. Each
+      // refresh lands just before a step delay, which absorbs the cost.
+      if (this.live.showEquity) table.refreshEquity()
       const history: string[] = []
       const sb = table.state.seats.find((s) => s.lastActionLabel === 'SB')
       const bb = table.state.seats.find((s) => s.lastActionLabel === 'BB')
@@ -628,11 +636,16 @@ export class MatchRunner {
         if (step.kind === 'await') {
           await this.gate()
           if (this.isStopping) break
+          const foldedBefore = table.state.seats.filter((seat) => seat.folded).length
           await this.playPokerTurn(table, step.seatIndex, history)
+          if (table.state.seats.filter((seat) => seat.folded).length !== foldedBefore) {
+            if (this.live.showEquity) table.refreshEquity()
+          }
         } else if (step.kind === 'street') {
           const board = table.state.board.map(cardCode).join(' ')
           this.log('deal', `${capitalise(step.street)}: ${step.cards.map(cardCode).join(' ')}  —  board ${board}`)
           history.push(`${step.street} (${board})`)
+          if (this.live.showEquity) table.refreshEquity()
           this.pushSnapshot()
           await this.beat()
         } else if (step.kind === 'payout') {
@@ -645,7 +658,7 @@ export class MatchRunner {
             this.log(
               'result',
               `${award.seatName} wins ${award.amount} chips` +
-                (award.handLabel ? ` with ${award.handLabel.toLowerCase()}` : '') +
+                (award.handLabel ? ` with ${uncapitalise(award.handLabel)}` : '') +
                 (table.state.sidePots.length > 1 ? ` (pot ${award.potIndex + 1})` : '') +
                 '.',
               award.seatId

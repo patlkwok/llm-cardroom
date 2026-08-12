@@ -20,6 +20,12 @@ export interface HandRank {
   category: HandCategory
   /** The five cards that make the hand, best first. */
   cards: Card[]
+  /**
+   * The ranks compared in order, most significant first. Exposed so a showdown
+   * can work out which card actually settled it and say only that much.
+   */
+  tiebreakers: number[]
+  /** Complete description: two of these match only if the hands truly tie. */
   label: string
 }
 
@@ -144,51 +150,80 @@ export function evaluate5(cards: Card[]): HandRank {
     value: encode(category, tiebreakers),
     category,
     cards: best,
-    label: describe(category, byGroup, best, high)
+    tiebreakers,
+    label: describeHand(category, tiebreakers)
   }
 }
 
-function describe(
+/**
+ * How far down two hands have to be read before they differ: an index into
+ * `tiebreakers`, or 0 when the categories alone settle it. Feeding that to
+ * `describeHand` gives the shortest description that still explains the win.
+ */
+export function decidingIndex(winner: HandRank, rival: HandRank): number {
+  if (winner.category !== rival.category) return 0
+  for (let i = 0; i < winner.tiebreakers.length; i++) {
+    if (winner.tiebreakers[i] !== rival.tiebreakers[i]) return i
+  }
+  // Identical hands: nothing distinguishes them, so describe them in full.
+  return winner.tiebreakers.length - 1
+}
+
+/** Lowercases only the first letter, so rank letters survive: "flush, J 9 5". */
+export function uncapitalise(text: string): string {
+  return text.charAt(0).toLowerCase() + text.slice(1)
+}
+
+/**
+ * Describes a hand down to tiebreaker index `upto`.
+ *
+ * The default names every rank that can matter, so two labels match only when
+ * the hands genuinely tie — naming just the first kicker was not enough, since
+ * a pair carries three of them and trips two. A smaller `upto` yields the
+ * shortest form that still explains a win: pass `decidingIndex` for that.
+ */
+export function describeHand(
   category: HandCategory,
-  byGroup: number[],
-  cards: Card[],
-  high: number | null
+  tiebreakers: number[],
+  upto: number = tiebreakers.length - 1
 ): string {
   const name = CATEGORY_NAME[category]
+  const t = tiebreakers
   const r = (n: number): string => rankLabel(n as Rank)
   const p = (n: number): string => PLURAL[n]
 
-  /**
-   * Naming only the paired ranks made two hands that differ solely by kicker
-   * print identically, so a correct showdown read as a mishandled tie. Anything
-   * the label leaves out is a rank that can decide the pot.
-   */
-  const kicker = (rank: number | undefined): string =>
-    rank === undefined ? '' : `, ${SINGULAR[rank]} kicker`
+  /** Kickers from `from` onwards, trimmed to whatever `upto` still needs named. */
+  const kickers = (from: number): string => {
+    const shown = t.slice(from, upto + 1)
+    if (shown.length === 0) return ''
+    if (shown.length === 1) return `, ${SINGULAR[shown[0]]} kicker`
+    return `, ${shown.map(r).join(' ')} kickers`
+  }
 
-  /** Every rank in the hand, high to low — for the two categories where all five count. */
-  const allRanks = (): string => cards.map((card) => r(card.rank)).join(' ')
+  /** Ranks high to low, for the categories where every card counts. */
+  const run = (): string =>
+    upto <= 0 ? `${r(t[0])} high` : t.slice(0, upto + 1).map(r).join(' ')
 
   switch (category) {
     case HandCategory.StraightFlush:
-      return high === 14 ? 'Royal flush' : `${name}, ${r(high as number)} high`
-    case HandCategory.Quads:
-      return `${name}, ${p(byGroup[0])}${kicker(byGroup[1])}`
+      return t[0] === 14 ? 'Royal flush' : `${name}, ${r(t[0])} high`
+    case HandCategory.Straight:
+      return `${name}, ${r(t[0])} high`
     case HandCategory.FullHouse:
       // Trips plus pair fully determine a full house; nothing is left out.
-      return `${name}, ${p(byGroup[0])} full of ${p(byGroup[1])}`
-    case HandCategory.Flush:
-      return `${name}, ${r(cards[0].rank)} high (${allRanks()})`
-    case HandCategory.Straight:
-      return `${name}, ${r(high as number)} high`
+      return `${name}, ${p(t[0])} full of ${p(t[1])}`
+    case HandCategory.Quads:
+      return `${name}, ${p(t[0])}${kickers(1)}`
     case HandCategory.Trips:
-      return `${name}, ${p(byGroup[0])}${kicker(byGroup[1])}`
+      return `${name}, ${p(t[0])}${kickers(1)}`
     case HandCategory.TwoPair:
-      return `${name}, ${p(byGroup[0])} and ${p(byGroup[1])}${kicker(byGroup[2])}`
+      return `${name}, ${p(t[0])} and ${p(t[1])}${kickers(2)}`
     case HandCategory.Pair:
-      return `${name} of ${p(byGroup[0])}${kicker(byGroup[1])}`
+      return `${name} of ${p(t[0])}${kickers(1)}`
+    case HandCategory.Flush:
+      return `${name}, ${run()}`
     default:
-      return `${name}, ${r(cards[0].rank)} high (${allRanks()})`
+      return `${name}, ${run()}`
   }
 }
 

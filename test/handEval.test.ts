@@ -1,6 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { evaluate5, evaluateBest, HandCategory } from '../src/main/games/poker/handEval.ts'
+import {
+  decidingIndex,
+  describeHand,
+  evaluate5,
+  evaluateBest,
+  HandCategory
+} from '../src/main/games/poker/handEval.ts'
 import type { Card, Rank, Suit } from '../src/shared/cards.ts'
 
 /** Parses "As Kd Qh Jc Ts" into cards. */
@@ -125,19 +131,61 @@ test('hands that differ only by kicker do not print the same label', () => {
 
 test('every category names whatever decides it', () => {
   const cases: Array<[string, RegExp]> = [
-    ['As Ah Ad Ac Kd', /four of a kind, aces, king kicker/i],
-    ['As Ah Ad Kc Qd', /three of a kind, aces, king kicker/i],
-    ['As Ah Kd Kc Qd', /two pair, aces and kings, queen kicker/i],
-    ['As Ah Kd Qc Jd', /pair of aces, king kicker/i],
-    ['As Ks 9s 8s 5s', /flush, a high \(A K 9 8 5\)/i],
-    ['As Kh 9d 8c 5s', /high card, a high \(A K 9 8 5\)/i],
+    ['As Ah Ad Ac Kd', /^Four of a kind, aces, king kicker$/],
+    ['As Ah Ad Kc Qd', /^Three of a kind, aces, K Q kickers$/],
+    ['As Ah Kd Kc Qd', /^Two pair, aces and kings, queen kicker$/],
+    ['As Ah Kd Qc Jd', /^Pair of aces, K Q J kickers$/],
+    ['As Ks 9s 8s 5s', /^Flush, A K 9 8 5$/],
+    ['As Kh 9d 8c 5s', /^High card, A K 9 8 5$/],
     // Fully determined by what is already printed.
-    ['As Ah Ad Kc Kd', /full house, aces full of kings/i],
-    ['9s 8h 7d 6c 5s', /straight, 9 high/i]
+    ['As Ah Ad Kc Kd', /^Full house, aces full of kings$/],
+    ['9s 8h 7d 6c 5s', /^Straight, 9 high$/]
   ]
   for (const [text, pattern] of cases) {
     assert.match(evaluate5(hand(text)).label, pattern)
   }
+})
+
+test('a full label is unique to the hand strength it describes', () => {
+  // Every category with more than one kicker used to collide here: only the
+  // first kicker was named, so AA985 and AA983 read identically.
+  const collidable: Array<[string, string]> = [
+    ['As Ah 9d 8c 5s', 'Ac Ad 9h 8s 3c'], // pair, third kicker decides
+    ['As Ah Ad 9c 8s', 'Ac Ah As 9d 7c'], // trips, second kicker decides
+    ['As Ks 9s 8s 5s', 'Ah Kh 9h 8h 4h'], // flush, fifth card decides
+    ['As Kh 9d 8c 5s', 'Ad Kc 9h 8s 4d'] // high card, fifth card decides
+  ]
+  for (const [x, y] of collidable) {
+    const a = evaluate5(hand(x))
+    const b = evaluate5(hand(y))
+    assert.notEqual(a.value, b.value, `${x} and ${y} are different hands`)
+    assert.notEqual(a.label, b.label, `"${a.label}" must not describe both`)
+  }
+})
+
+test('the deciding index is where two hands first part company', () => {
+  const acesUp = evaluate5(hand('As Ah Kd Kc Qd'))
+  const flush = evaluate5(hand('As Ks 9s 8s 5s'))
+  const kingsUp = evaluate5(hand('Ks Kh Qd Qc Jd'))
+  const acesUpLowKicker = evaluate5(hand('Ac Ad Kh Ks 8c'))
+
+  // Different categories: nothing below the category needs saying.
+  assert.equal(decidingIndex(flush, acesUp), 0)
+  assert.equal(describeHand(flush.category, flush.tiebreakers, 0), 'Flush, A high')
+
+  // Same category, different top pair.
+  assert.equal(decidingIndex(acesUp, kingsUp), 0)
+  assert.equal(
+    describeHand(acesUp.category, acesUp.tiebreakers, 0),
+    'Two pair, aces and kings'
+  )
+
+  // Alike until the kicker, which therefore has to be named.
+  assert.equal(decidingIndex(acesUp, acesUpLowKicker), 2)
+  assert.equal(
+    describeHand(acesUp.category, acesUp.tiebreakers, 2),
+    'Two pair, aces and kings, queen kicker'
+  )
 })
 
 test('two pair with an identical kicker still reads as a tie', () => {

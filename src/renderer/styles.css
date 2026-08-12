@@ -1080,6 +1080,13 @@ button:disabled {
   color: rgba(255, 255, 255, 0.4);
 }
 
+/* Shares the slot with .seat-bb, so it keeps the same footprint. */
+.seat-equity {
+  font-size: 10px;
+  font-weight: 700;
+  color: #7ee787;
+}
+
 .seat-showdown {
   margin-top: 3px;
   font-size: 9.5px;

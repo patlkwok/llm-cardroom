@@ -95,6 +95,15 @@ file on disk holds nothing but the encrypted key.
   Every hole card is face up to you, the way a televised table is shown. The
   models never get that view: each prompt contains only that model's own two
   cards, and there is a test asserting no opponent's cards leak into it.
+- **Win probability**, also as on television: each seat's chance of taking the
+  hand, in the same slot that otherwise shows stack depth in big blinds. It is
+  exact from the flop onwards — at most about 1,100 runouts to enumerate — and
+  sampled pre-flop, where enumerating would mean millions. It costs nothing to
+  run, being CPU rather than another paid call, but it is a few hundred
+  milliseconds per board change, so **Show win probability** in the Pace panel
+  turns it off for a table you want running flat out. Like the hole cards, it is
+  strictly for you: it is computed from everyone's cards, so a test asserts the
+  prompt is byte-identical whether or not it has been calculated.
 - **Reasoning** is the interesting panel: each decision with the model's stated
   justification, latency, token counts and cost.
 - **Table log** is the dealer's-eye narration of every card and action.
@@ -206,7 +215,7 @@ seven-card hand evaluation with proper kicker comparison.
 npm test
 ```
 
-102 tests covering hand evaluation, betting order, side pots, chip conservation
+110 tests covering hand evaluation, betting order, side pots, chip conservation
 across randomised hands (including players who fold when checking was free) and
 repeated roster churn, undersized all-in raises, short blinds, blackjack settlement,
 insurance payouts, bankroll accounting, stake changes landing on the right
@@ -223,7 +232,7 @@ src/
     config.ts         encrypted key storage, persisted settings
     games/
       blackjack.ts    blackjack engine
-      poker/          hold'em engine + 7-card hand evaluator
+      poker/          hold'em engine, 7-card evaluator, win-probability
       prompts.ts      prompt construction and reply parsing
       agent.ts        one decision, with retries and a fallback
       runner.ts       drives a match, emits events to the UI

@@ -7,7 +7,8 @@ import type {
   SidePot,
   Street
 } from '../../../shared/types.ts'
-import { evaluateBest, type HandRank } from './handEval.ts'
+import { decidingIndex, describeHand, evaluateBest, uncapitalise, type HandRank } from './handEval.ts'
+import { handEquity, type EquityOptions } from './equity.ts'
 
 export interface LegalActions {
   canFold: boolean
@@ -159,6 +160,7 @@ export class PokerTable {
       seat.lastActionLabel = undefined
       seat.showdownHand = undefined
       seat.wonThisHand = 0
+      seat.equity = undefined
     }
 
     // Move the button to the next seat that still has chips.
@@ -508,6 +510,23 @@ export class PokerTable {
         }
       }
 
+      // The award line names only what settled this pot: beating a lower
+      // category needs no kicker, while two hands alike down to the last card
+      // need every one of them. The seat plate keeps the full label.
+      let awardLabel: string | undefined
+      if (showdown) {
+        const winnerRank = this.lastRanks.get(winners[0].id)
+        if (winnerRank) {
+          let upto = 0
+          for (const seat of eligible) {
+            if (winners.includes(seat)) continue
+            const rival = this.lastRanks.get(seat.id)
+            if (rival) upto = Math.max(upto, decidingIndex(winnerRank, rival))
+          }
+          awardLabel = describeHand(winnerRank.category, winnerRank.tiebreakers, upto)
+        }
+      }
+
       const share = Math.floor(pot.amount / winners.length)
       let remainder = pot.amount - share * winners.length
 
@@ -526,7 +545,7 @@ export class PokerTable {
           seatName: seat.name,
           amount,
           potIndex,
-          handLabel: showdown ? this.lastRanks.get(seat.id)?.label : undefined
+          handLabel: awardLabel
         })
       }
     })
@@ -599,6 +618,42 @@ export class PokerTable {
     return true
   }
 
+  /**
+   * Recomputes each contending seat's win probability from the current board.
+   *
+   * Opt-in rather than automatic, for two reasons: it costs real CPU, and the
+   * randomised engine tests run hundreds of hands with no use for it. The
+   * runner calls this when the board changes or someone folds — equity does not
+   * depend on the betting, so nothing else can move it.
+   */
+  refreshEquity(options: EquityOptions = {}): void {
+    const s = this.state
+    for (const seat of s.seats) seat.equity = undefined
+
+    const contenders = s.seats.filter(
+      (seat) => !seat.folded && !seat.busted && seat.cards.length === 2
+    )
+    if (contenders.length === 0) return
+    if (contenders.length === 1) {
+      contenders[0].equity = 1
+      return
+    }
+
+    // Folded hole cards are known and cannot come back out of the deck.
+    const dead = s.seats
+      .filter((seat) => seat.folded && seat.cards.length === 2)
+      .flatMap((seat) => seat.cards)
+
+    const shares = handEquity(
+      contenders.map((seat) => seat.cards),
+      s.board,
+      { ...options, dead: [...dead, ...(options.dead ?? [])] }
+    )
+    contenders.forEach((seat, i) => {
+      seat.equity = shares[i]
+    })
+  }
+
   /** Text description of a seat's hole cards, for prompts. */
   holeCards(seatIndex: number): string {
     return this.state.seats[seatIndex].cards.map(cardCode).join(' ')
@@ -620,6 +675,6 @@ function summariseAwards(awards: PotAward[]): string {
     byPlayer.set(award.seatName, entry)
   }
   return [...byPlayer.entries()]
-    .map(([name, e]) => `${name} wins ${e.amount}${e.label ? ` with ${e.label.toLowerCase()}` : ''}`)
+    .map(([name, e]) => `${name} wins ${e.amount}${e.label ? ` with ${uncapitalise(e.label)}` : ''}`)
     .join('; ')
 }

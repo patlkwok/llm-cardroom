@@ -288,6 +288,21 @@ export function SetupPanel(props: Props): React.JSX.Element {
             onChange={(maxRounds) => patch({ maxRounds })}
           />
         </Field>
+        {settings.game === 'poker' && (
+          <>
+            <Toggle
+              label="Show win probability"
+              checked={settings.showEquity}
+              onChange={(showEquity) => patch({ showEquity })}
+            />
+            <p className="panel-hint">
+              Each seat's chance of winning the hand, as a televised table shows
+              it. Costs nothing to run — it is your CPU, not an API call — but it
+              is a few hundred milliseconds per board change, so turn it off if
+              you want the table to rip along. The models never see it.
+            </p>
+          </>
+        )}
       </section>
 
       <div className="controls">

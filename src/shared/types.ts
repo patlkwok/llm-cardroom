@@ -145,6 +145,12 @@ export interface PokerSeat {
   /** Set at showdown for seats that showed cards. */
   showdownHand?: string
   wonThisHand: number
+  /**
+   * Chance of winning the hand from the current board, 0..1, as a televised
+   * table shows it. **Spectator only** — it is derived from every player's hole
+   * cards, so it must never reach a prompt.
+   */
+  equity?: number
 }
 
 export interface SidePot {
@@ -196,6 +202,13 @@ export interface MatchSettings {
   poker: PokerRules
   /** Milliseconds to pause between visible steps so a human can follow along. */
   stepDelayMs: number
+  /**
+   * Show each poker seat's live win probability, the way a televised table
+   * does. Costs no money — it is CPU, not an API call — but it is real work:
+   * a few hundred milliseconds per board change, which dominates at a very
+   * fast pace. Spectator-only; it never reaches a prompt.
+   */
+  showEquity: boolean
   /** Stop after this many rounds/hands; 0 runs until stopped or busted. */
   maxRounds: number
 }
@@ -293,6 +306,7 @@ export function defaultSettings(): MatchSettings {
     blackjack: { ...DEFAULT_BLACKJACK_RULES },
     poker: { ...DEFAULT_POKER_RULES },
     stepDelayMs: 900,
+    showEquity: true,
     maxRounds: 0
   }
 }
