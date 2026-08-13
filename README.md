@@ -296,7 +296,7 @@ match sorts the board into final standings.
 npm test
 ```
 
-211 tests. The load-bearing ones are invariants rather than examples: chip
+213 tests. The load-bearing ones are invariants rather than examples: chip
 conservation across randomised poker hands and repeated roster churn, per-seat
 bankroll accounting at blackjack, card conservation on the shoe, 52 cards and
 exactly 26 points conserved through every hearts hand, and exact-rational

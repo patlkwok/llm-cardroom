@@ -727,3 +727,89 @@ test('tricks won and points taken add up per seat across a hand', () => {
   assert.equal(pointsBySeat.reduce((a, b) => a + b, 0), POINTS_PER_HAND)
   assert.equal(tricksBySeat.reduce((a, b) => a + b, 0), CARDS_PER_HAND)
 })
+
+
+test('a seat holding nothing but points must break the first-trick rule', () => {
+  // The one case where "no points on the first trick" cannot be honoured. It is
+  // already handled — `legalPlays` falls through when no safe card exists — but
+  // it is unreachable by random dealing, so the escape is pinned deliberately
+  // rather than left to a one-in-ten-billion hand to exercise.
+  //
+  // Thirteen point cards means thirteen of the fourteen that exist (13 hearts
+  // plus the queen of spades), so it can only ever befall a follower: the seat
+  // on lead holds the two of clubs, which carries none.
+  const table = newTable(10_000)
+  table.startHand()
+  const s = table.state
+  s.phase = 'playing'
+  s.trickNumber = 1
+  s.leadSeatIndex = 0
+  s.actingSeatIndex = 0
+  s.currentTrick = { number: 1, leadSuit: 'c', plays: [], points: 0 }
+
+  const allHearts: Card[] = Array.from({ length: 13 }, (_, i) => ({
+    rank: (i + 2) as Card['rank'],
+    suit: 'h'
+  }))
+  s.players[0].hand = [TWO_OF_CLUBS, { rank: 5, suit: 'd' }]
+  s.players[1].hand = allHearts
+  s.players[2].hand = [{ rank: 3, suit: 'c' }, { rank: 6, suit: 'd' }]
+  s.players[3].hand = [{ rank: 4, suit: 'c' }, { rank: 7, suit: 'd' }]
+
+  // The opening lead is forced and carries no points, as always.
+  assert.deepEqual(table.legalPlays(0), [TWO_OF_CLUBS])
+  table.playCard(0, TWO_OF_CLUBS)
+
+  // Seat 1 is void in clubs and holds nothing but hearts. Every one of them is
+  // legal — the alternative would be no legal play at all, which would wedge
+  // the hand.
+  const legal = table.legalPlays(1)
+  assert.equal(legal.length, 13, 'every card must be playable when none is safe')
+  assert.ok(legal.every((c) => cardPoints(c) > 0), 'and every one of them costs a point')
+
+  table.playCard(1, legal[0])
+  table.playCard(2, { rank: 3, suit: 'c' })
+  table.playCard(3, { rank: 4, suit: 'c' })
+
+  const trick = table.resolveTrick()
+  assert.equal(trick.points, 1, 'the first trick carries a point, because it had to')
+  assert.equal(
+    trick.winnerSeatIndex,
+    3,
+    'and it goes to the highest club, not to the heart'
+  )
+  // Playing a heart here breaks hearts, exactly as it would on any other trick.
+  assert.equal(s.heartsBroken, true)
+})
+
+test('a seat is never left without a legal play, whatever it holds', () => {
+  // The invariant the case above is a corner of: if a seat has cards, it has a
+  // move. Checked over every play of several full hands, since a rule that
+  // filters the hand down to nothing would wedge the match rather than fail
+  // loudly.
+  const table = newTable(10_000)
+  for (let hand = 0; hand < 6; hand++) {
+    table.startHand()
+    passAnything(table)
+    let guard = 0
+    while (!table.handComplete && guard++ < 200) {
+      const seat = table.actingPlayer
+      assert.ok(seat, 'somebody must be on turn')
+      const legal = table.legalPlays(seat.seatIndex)
+      assert.ok(
+        legal.length > 0,
+        `${seat.name} holds ${seat.hand.map(cardCode).join(' ')} but has no legal play`
+      )
+      assert.ok(
+        legal.every((c) => seat.hand.some((held) => sameCard(held, c))),
+        'and every legal play is a card it actually holds'
+      )
+      table.playCard(seat.seatIndex, legal[Math.floor(Math.random() * legal.length)])
+      if (table.trickComplete) {
+        table.resolveTrick()
+        if (table.awaitingNextTrick) table.startNextTrick()
+      }
+    }
+    table.scoreHand()
+  }
+})
