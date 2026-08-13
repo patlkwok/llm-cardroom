@@ -135,15 +135,16 @@ match is running. A new stake applies from the **next** round — a hand already
 dealt always settles for the amount it was wagered for — and the change is
 noted in the table log.
 
-At blackjack, poker and the 24 puzzle you can also **add or remove models
-mid-match**. Both take effect at the next round boundary, never mid-hand: a
-player who joins buys in for the starting stack, and a player who leaves takes
-their chips with them. Drop below two players at poker and the table closes. The
-table log records each arrival and departure.
+At blackjack and poker you can also **add or remove models mid-match**. Both
+take effect at the next round boundary, never mid-hand: a player who joins buys
+in for the starting stack, and a player who leaves takes their chips with them.
+Drop below two players at poker and the table closes. The table log records each
+arrival and departure.
 
-**Hearts is the exception**: it is defined around four hands of thirteen cards,
-so its table locks at the first deal and nobody joins or leaves for the rest of
-the match.
+**Hearts and the 24 puzzle lock their tables** at the first deal instead. Hearts
+is defined around four hands of thirteen cards; the 24 puzzle is scored in
+rounds won, so a model seated halfway through has had fewer chances at them than
+one that answered every puzzle.
 
 Adding a model **pauses the table** so you can set it up before it is dealt in.
 A model waiting to join is marked *joins next hand* and its reasoning effort

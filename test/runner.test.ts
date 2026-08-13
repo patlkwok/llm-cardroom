@@ -1902,7 +1902,7 @@ test('a bluffed expression is graded as wrong rather than corrected', async () =
   }
 })
 
-test('the 24 table can seat and unseat models between puzzles', async () => {
+test('the 24 table never seats or unseats anybody mid-match', async () => {
   const sink = capture()
   mockOpenRouter(respondTwentyFour, sink)
 
@@ -1911,6 +1911,9 @@ test('the 24 table can seat and unseat models between puzzles', async () => {
   const running = runner.run()
 
   await new Promise((r) => setTimeout(r, 200))
+  // Fixed roster, for the same reason as hearts: the score is rounds won, so a
+  // model seated at puzzle 12 has had fewer chances at them than one that
+  // played every puzzle. Neither of these may do anything at all.
   runner.applyLiveSettings({
     ...settings,
     players: [
@@ -1918,16 +1921,24 @@ test('the 24 table can seat and unseat models between puzzles', async () => {
       { id: 'late', name: 'Latecomer', modelId: 'test/model', modelName: 'Test', reasoningEffort: 'default' as const }
     ]
   })
-  await new Promise((r) => setTimeout(r, 120))
-  runner.resume()
+  runner.applyLiveSettings({ ...settings, players: settings.players.slice(0, 1) })
   await new Promise((r) => setTimeout(r, 400))
   runner.stop()
   await running
 
+  const texts = logTexts(sink)
+  assert.ok(!texts.some((t) => t.includes('joins the table')), 'nobody may join')
+  assert.ok(!texts.some((t) => t.includes('leaves the table')), 'nobody may leave')
+  assert.ok(!texts.some((t) => t.includes('will join next')), 'and the table is never paused for one')
+  // This game has no chips, so it must never talk about them.
+  assert.ok(
+    !texts.some((t) => /chips/.test(t)),
+    `the 24 puzzle has no chips: ${texts.filter((t) => /chips/.test(t)).join(' | ')}`
+  )
+
   const tf = tableOf(finalSnapshot(sink), 'twentyfour')
-  assert.ok(tf)
-  assert.equal(tf.players.length, 3, 'the newcomer took a seat')
-  assert.ok(tf.players.some((p) => p.id === 'late'))
+  assert.equal(tf?.players.length, 2, 'still exactly the seats it started with')
+  assert.ok(!tf?.players.some((p) => p.id === 'late'))
 })
 
 test('a rate-limited model is not punished for its retry when the round is scored', async () => {

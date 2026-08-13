@@ -67,8 +67,11 @@ export const GAMES: Record<GameKind, GameDescriptor> = {
     shortLabel: '24',
     minPlayers: 1,
     maxPlayers: 6,
+    // Every seat answers every puzzle, and the score is rounds won, so a model
+    // that joined at puzzle 12 is not comparable with one that played all of
+    // them. Seat whoever is racing before the first deal.
+    fixedRoster: true,
     roundNoun: 'puzzle',
-    fixedRoster: false,
     lowestWins: false,
     simultaneous: true
   }

@@ -136,6 +136,7 @@ export function SetupPanel(props: Props): React.JSX.Element {
                 const next = players.map((p) => (p.id === player.id ? { ...p, reasoningEffort } : p))
                 patch({ players: next })
               }}
+              canRemove={!rosterLocked}
               onReplace={() => props.onReplacePlayer(player.id)}
               onRemove={() => props.onRemovePlayer(player.id)}
             />
@@ -158,20 +159,18 @@ export function SetupPanel(props: Props): React.JSX.Element {
         )}
         {running && rosterLocked && (
           <p className="panel-hint">
-            {game.label} locks its table for the whole match: nobody joins or leaves
-            once the first hand is dealt.
+            {game.label} locks its table for the whole match: nobody joins or
+            leaves once the first {game.roundNoun} is dealt.
           </p>
         )}
         {running && !rosterLocked && (
           <p className="panel-hint">
             Seats added or removed now take effect from the next {game.roundNoun}.
-            {settings.game === 'twentyfour'
-              ? ' Everyone answers every puzzle, so each extra seat is another call per round.'
-              : ' A player who leaves takes their chips; a player who joins buys in for ' +
-                (settings.game === 'poker'
-                  ? settings.poker.startingStack
-                  : settings.blackjack.startingBankroll) +
-                '.'}
+            A player who leaves takes their chips; a player who joins buys in for{' '}
+            {settings.game === 'poker'
+              ? settings.poker.startingStack
+              : settings.blackjack.startingBankroll}
+            .
           </p>
         )}
       </section>
@@ -307,6 +306,7 @@ function PlayerRow({
   locked,
   roundNoun,
   seated,
+  canRemove,
   onRename,
   onEffort,
   onReplace,
@@ -317,6 +317,7 @@ function PlayerRow({
   locked: boolean
   roundNoun: string
   seated: boolean
+  canRemove: boolean
   onRename: (name: string) => void
   onEffort: (value: ReasoningEffort) => void
   onReplace: () => void
@@ -352,7 +353,14 @@ function PlayerRow({
         </button>
         <button
           className="icon-button danger"
-          title={locked ? `Remove after this ${roundNoun}` : 'Remove'}
+          disabled={!canRemove}
+          title={
+            !canRemove
+              ? 'This table is fixed for the whole match'
+              : locked
+                ? `Remove after this ${roundNoun}`
+                : 'Remove'
+          }
           onClick={onRemove}
         >
           ×

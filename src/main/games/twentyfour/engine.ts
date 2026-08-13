@@ -119,25 +119,6 @@ export class TwentyFourTable {
       .join(' and ')
   }
 
-  /* --------------------------------------------------------------- roster */
-
-  addPlayer(seed: TwentyFourSeed): void {
-    const s = this.state
-    if (s.players.some((p) => p.id === seed.id)) return
-    s.players.push(this.blankPlayer(seed, s.players.length))
-  }
-
-  removePlayer(id: string): boolean {
-    const s = this.state
-    const index = s.players.findIndex((p) => p.id === id)
-    if (index === -1) return false
-    s.players.splice(index, 1)
-    s.players.forEach((player, i) => {
-      player.seatIndex = i
-    })
-    return true
-  }
-
   /* ----------------------------------------------------------------- deal */
 
   /** Deals four fresh cards and works out whether they can be made into 24. */

@@ -197,10 +197,16 @@ function TwentyFourRules({ settings, patch, locked, playerCount }: RulesPanelPro
           to draw — "none of poker's cheap hands" — meant nothing to anyone
           reading the 24 panel; say the actual consequence instead. */}
       <p className={playerCount > 3 ? 'panel-warn' : 'panel-hint'}>
-        Every seat answers every puzzle at once, so a round always costs{' '}
-        {playerCount || 'one'} {playerCount === 1 ? 'call' : 'calls'} — nobody
-        drops out part way and there is no cheap round. Keep "stop after
-        puzzles" set.
+        Every seat answers every puzzle at once, so{' '}
+        {playerCount === 0
+          ? 'each round costs one call per seat'
+          : `a round always costs ${playerCount} ${playerCount === 1 ? 'call' : 'calls'}`}{' '}
+        — nobody drops out part way and there is no cheap round. Keep "stop
+        after puzzles" set.
+      </p>
+      <p className="panel-hint">
+        The table is fixed once the first puzzle is dealt: the score is rounds
+        won, so a model seated halfway through has had fewer chances at them.
       </p>
       <p className="panel-hint">
         The round goes to the fastest correct answer, timed on the model's own

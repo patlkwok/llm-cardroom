@@ -7,7 +7,7 @@ import type {
   TwentyFourState
 } from '../../../shared/types.ts'
 import type { AgentResult } from '../agent.ts'
-import type { DriverContext, GameDriver, RosterTable } from '../driver.ts'
+import type { DriverContext, GameDriver } from '../driver.ts'
 import { puzzleValue, TwentyFourTable, type TwentyFourAnswer } from '../twentyfour/engine.ts'
 import { buildTwentyFourPrompt, parseTwentyFourReply } from '../prompts/twentyfour.ts'
 import { tokenBudget } from '../../openrouter.ts'
@@ -83,29 +83,16 @@ export class TwentyFourDriver implements GameDriver {
     }
   }
 
-  private rosterTable(): RosterTable {
-    const table = this.table
-    return {
-      seats: () => table.state.players.map((p) => ({ id: p.id, name: p.name, chips: 0 })),
-      capacity: GAMES.twentyfour.maxPlayers,
-      buyIn: 0,
-      add: (player) =>
-        table.addPlayer({ id: player.id, name: player.name, modelId: player.modelId }),
-      remove: (id) => table.removePlayer(id)
-    }
-  }
-
   async playRound(): Promise<'played' | 'ended'> {
     const ctx = this.ctx
     const table = this.table
     if (table.isMatchOver) return 'ended'
 
-    ctx.reconcileRoster(this.rosterTable())
-    if (table.state.players.length === 0) {
-      ctx.log('result', 'Nobody is left at the table, so the game ends.')
-      return 'ended'
-    }
-
+    // Fixed roster, like hearts: `ctx.reconcileRoster` is deliberately never
+    // called. Seats cannot be added or removed once the first puzzle is dealt,
+    // because the score is rounds won and a model that joined late has had
+    // fewer chances at them. It also kept announcing arrivals and departures in
+    // chips, which this game does not have.
     table.startRound()
     const s = table.state
     ctx.log(
