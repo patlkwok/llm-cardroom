@@ -19,8 +19,20 @@ export interface TwentyFourSeed {
 /** One model's answer to one puzzle. */
 export interface TwentyFourAnswer {
   playerId: string
-  /** The expression given, or null when the model claimed no solution. */
+  /**
+   * The expression given, or null when the model **claimed** there is no
+   * solution. A model that failed to answer at all does not belong here — see
+   * `noAnswer`.
+   */
   expression: string | null
+  /**
+   * The model never produced a usable reply and the table fell back for it.
+   *
+   * This has to be distinguished from a deliberate "no solution", because the
+   * fallback *is* null: without the flag, a model that timed out three times
+   * was graded as correctly spotting an impossible deal and credited for it.
+   */
+  noAnswer?: boolean
   /**
    * How long the model took, lower being faster. The engine treats this as an
    * opaque ordering key and **never reads a clock itself** — a race is
@@ -79,7 +91,8 @@ export class TwentyFourTable {
       wrong: 0,
       invalid: 0,
       roundsPlayed: 0,
-      latencies: []
+      latencies: [],
+      correctLatencies: []
     }
   }
 
@@ -217,10 +230,12 @@ export class TwentyFourTable {
       if (!player) continue
       player.roundsPlayed++
       player.lastResult = result
+      // A round with no reply has no duration to record; a wrong reply does.
       if (Number.isFinite(result.elapsedMs)) player.latencies.push(result.elapsedMs)
 
       if (result.verdict === 'correct') {
         player.solved++
+        if (Number.isFinite(result.elapsedMs)) player.correctLatencies.push(result.elapsedMs)
         if (result.won) player.score++
       } else if (result.verdict === 'invalid') {
         player.invalid++
@@ -266,6 +281,19 @@ export class TwentyFourTable {
       elapsedMs: answer.elapsedMs,
       rank: 0,
       won: false
+    }
+
+    // Silence is not an answer. A model that never replied must never be
+    // credited for "spotting" that a deal was impossible — it did not spot
+    // anything, and on an unsolvable deal that is exactly what used to happen.
+    if (answer.noAnswer) {
+      return {
+        ...base,
+        expression: null,
+        verdict: 'none',
+        elapsedMs: Number.POSITIVE_INFINITY,
+        problem: 'No usable reply.'
+      }
     }
 
     // Claiming no solution is a legal answer, graded against the solver.

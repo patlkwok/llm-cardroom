@@ -1,6 +1,11 @@
 import { cardCode } from '../../../shared/cards.ts'
 import { GAMES } from '../../../shared/types.ts'
-import type { MatchSettings, PlayerConfig, TwentyFourState } from '../../../shared/types.ts'
+import type {
+  MatchSettings,
+  PlayerConfig,
+  TwentyFourResult,
+  TwentyFourState
+} from '../../../shared/types.ts'
 import type { AgentResult } from '../agent.ts'
 import type { DriverContext, GameDriver, RosterTable } from '../driver.ts'
 import { puzzleValue, TwentyFourTable, type TwentyFourAnswer } from '../twentyfour/engine.ts'
@@ -220,9 +225,14 @@ export class TwentyFourDriver implements GameDriver {
       )
     }
 
-    const answer = {
+    const answer: TwentyFourAnswer = {
       playerId: player.id,
       expression: result.action,
+      // The fallback for this game is `null`, which is indistinguishable from a
+      // deliberate "no solution" — so say which it was. A model that failed
+      // three attempts was otherwise credited with a correct answer whenever
+      // the deal happened to be impossible.
+      noAnswer: Boolean(result.fallbackReason),
       // The attempt that produced the answer, NOT the wall clock. `agent.ts`
       // backs off 429s, and firing N calls at once is exactly what provokes
       // them, so ranking on total latency would let rate limiting decide the
@@ -235,39 +245,59 @@ export class TwentyFourDriver implements GameDriver {
     // is on the felt the moment it arrives instead of every answer appearing
     // at once when the slowest model finally returns. Only the rank and the
     // win need everybody, and `settleRound` fills those in.
-    this.table.noteAnswer(answer)
+    const graded = this.table.noteAnswer(answer)
     ctx.recordDecision(player, result.action === null ? 'answers none' : `answers ${result.action}`, result)
+    // Narrated as it lands, for the same reason it is shown as it lands: the
+    // table log used to stay silent for the whole round and then print every
+    // answer at once, which reads nothing like a race.
+    this.logResult(graded)
   }
 
-  /** Says what everybody answered, in the order the answers came in. */
+  /** One line for one answer, said the moment it is graded. */
+  private logResult(result: TwentyFourResult): void {
+    const ctx = this.ctx
+    const time = Number.isFinite(result.elapsedMs)
+      ? ` in ${(result.elapsedMs / 1000).toFixed(1)}s`
+      : ''
+
+    if (result.verdict === 'correct') {
+      ctx.log(
+        'result',
+        result.expression === null
+          ? `${result.playerName} correctly says there is no solution${time}.`
+          : `${result.playerName} answers ${result.expression} = 24${time}.`,
+        result.playerId
+      )
+    } else if (result.verdict === 'wrong') {
+      ctx.log(
+        'result',
+        `${result.playerName} answers ${result.expression === null ? '"no solution"' : result.expression}` +
+          ` — ${result.problem ?? 'not 24'}`,
+        result.playerId
+      )
+    } else if (result.verdict === 'invalid') {
+      ctx.log(
+        'error',
+        `${result.playerName} answers ${result.expression} — ${result.problem ?? 'unusable'}`,
+        result.playerId
+      )
+    } else {
+      ctx.log('error', `${result.playerName} did not answer.`, result.playerId)
+    }
+  }
+
+  /**
+   * Closes the round off. The answers themselves were narrated as they landed,
+   * so this adds only what could not be known until everybody was in.
+   */
   private reportRound(): void {
     const ctx = this.ctx
     const s = this.table.state
 
+    // A seat that never answered at all gets its line here: nothing arrived to
+    // trigger one on the way through.
     for (const result of s.results) {
-      const time = Number.isFinite(result.elapsedMs) ? ` in ${(result.elapsedMs / 1000).toFixed(1)}s` : ''
-      if (result.verdict === 'correct') {
-        ctx.log(
-          'result',
-          result.expression === null
-            ? `${result.playerName} correctly says there is no solution${time}.`
-            : `${result.playerName} answers ${result.expression} = 24${time}.${result.won ? ' First!' : ''}`,
-          result.playerId
-        )
-      } else if (result.verdict === 'wrong') {
-        ctx.log(
-          'result',
-          `${result.playerName} answers ${result.expression === null ? '"no solution"' : result.expression}` +
-            ` — ${result.problem ?? 'not 24'}`,
-          result.playerId
-        )
-      } else if (result.verdict === 'invalid') {
-        ctx.log(
-          'error',
-          `${result.playerName} answers ${result.expression} — ${result.problem ?? 'unusable'}`,
-          result.playerId
-        )
-      } else {
+      if (result.verdict === 'none') {
         ctx.log('error', `${result.playerName} did not answer.`, result.playerId)
       }
     }

@@ -193,12 +193,14 @@ function TwentyFourRules({ settings, patch, locked, playerCount }: RulesPanelPro
         answer</strong>, and grading it is the only way to catch a model
         inventing an expression that does not evaluate.
       </p>
-      {/* Cost is the thing that surprises people here: unlike poker, nobody
-          folds and stops being asked. */}
+      {/* Cost is the thing that surprises people here. The comparison this used
+          to draw — "none of poker's cheap hands" — meant nothing to anyone
+          reading the 24 panel; say the actual consequence instead. */}
       <p className={playerCount > 3 ? 'panel-warn' : 'panel-hint'}>
-        Every seat answers every puzzle at once, so {playerCount || 'each'}{' '}
-        {playerCount === 1 ? 'call' : 'calls'} go out per round with none of
-        poker's cheap hands. Keep "stop after puzzles" set.
+        Every seat answers every puzzle at once, so a round always costs{' '}
+        {playerCount || 'one'} {playerCount === 1 ? 'call' : 'calls'} — nobody
+        drops out part way and there is no cheap round. Keep "stop after
+        puzzles" set.
       </p>
       <p className="panel-hint">
         The round goes to the fastest correct answer, timed on the model's own

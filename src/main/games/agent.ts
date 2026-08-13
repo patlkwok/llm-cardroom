@@ -157,9 +157,14 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
     // Correcting its formatting is the wrong feedback — it did not get far
     // enough to have any — and it wastes the remaining attempts.
     if (truncated && attempt < maxAttempts) {
+      // Read the budget BEFORE growing it: `grow()` mutates it, so reporting
+      // `budget` afterwards claimed the reply was cut off at the size it is
+      // about to be retried with — "Cut off after 20000 tokens. Retrying with a
+      // 20000-token budget."
+      const wasCutOffAt = budget
       const grown = grow()
       if (grown !== null) {
-        lastProblem = `Cut off after ${budget} tokens before answering.`
+        lastProblem = `Cut off after ${wasCutOffAt} tokens before answering.`
         request.onAttemptFailed?.(attempt, `${lastProblem} Retrying with a ${grown}-token budget.`)
         continue
       }

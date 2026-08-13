@@ -1075,6 +1075,12 @@ button:disabled {
      allowed to shrink, or it shoves the stats bar off the bottom. */
   flex: 1 1 auto;
   min-height: 0;
+  /* The stats bar is the last child of a flex column, so anything that refuses
+     to shrink here pushes it out of the bottom of the window and `overflow:
+     hidden` on `.felt` quietly eats it. Clipping inside this box instead is the
+     v1.2.0 blackjack lesson, and a thirteen-card vertical fan is exactly the
+     kind of fixed-size content that provokes it. */
+  overflow: hidden;
   z-index: 1;
 }
 
@@ -1236,12 +1242,21 @@ button:disabled {
   min-height: 0;
 }
 
-/* 22px of each card has to stay visible, not 14px: the corner stacks the rank
-   above the suit (3px inset + 9px rank + 8px suit), so a deeper overlap hid the
-   suit entirely and left a column of bare numbers. */
+/* The corner normally stacks the rank ABOVE the suit, which needs ~20px of card
+   showing — and thirteen cards at 22px each made the seat 315px tall, enough to
+   shove the stats bar off the bottom of a 700px window. Laying the corner out
+   sideways for a vertical fan needs only ~12px, so the suit stays readable at a
+   much deeper overlap. Height is the constraint on this axis, exactly as width
+   is on the other. */
+.card-fan-down .card-corner-tl {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 2px;
+}
+
 .card-fan-down .card + .card {
   margin-left: 0;
-  margin-top: -26px;
+  margin-top: -32px;
 }
 
 .hearts-centre {

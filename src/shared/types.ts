@@ -409,8 +409,20 @@ export interface TwentyFourPlayer {
   wrong: number
   invalid: number
   roundsPlayed: number
-  /** Every answering time, so the stats bar can report a median. */
+  /**
+   * Answering times for every round this seat actually replied to, right or
+   * wrong. Rounds where it never answered are excluded — there is no duration
+   * to record — but a wrong answer is still an answer and still counts.
+   *
+   * This is deliberate. Timing only the correct answers would flatter a model
+   * that gives up quickly whenever a puzzle is hard, and the pair of numbers is
+   * meant to disagree: a seat that instantly says "no solution" every round
+   * should show a fast median *and* a poor solve rate. `correctLatencies`
+   * carries the other reading for anyone who wants it.
+   */
   latencies: number[]
+  /** Answering times for correct answers only: "when it solves, how long?". */
+  correctLatencies: number[]
   lastResult?: TwentyFourResult
 }
 

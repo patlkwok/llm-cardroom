@@ -40,7 +40,8 @@ export function emptyTwentyFourState(settings: MatchSettings): TwentyFourState {
       wrong: 0,
       invalid: 0,
       roundsPlayed: 0,
-      latencies: []
+      latencies: [],
+      correctLatencies: []
     })),
     results: []
   }
@@ -70,6 +71,7 @@ export function TwentyFourView({ state, thinking, targetScore, finished }: Props
   const solved = players.reduce((sum, p) => sum + p.solved, 0)
   const solveRate = attempts > 0 ? Math.round((solved / attempts) * 100) : 0
   const allLatencies = players.flatMap((p) => p.latencies)
+  const correctLatencies = players.flatMap((p) => p.correctLatencies)
   const best = players.length ? Math.max(...players.map((p) => p.score)) : 0
 
   return (
@@ -141,7 +143,14 @@ export function TwentyFourView({ state, thinking, targetScore, finished }: Props
         <Stat
           label="Median time"
           value={allLatencies.length ? `${(median(allLatencies) / 1000).toFixed(1)}s` : '—'}
-          title="Typical answering time — the model's own attempt, with retries excluded"
+          title={
+            'Typical time to answer, across every answer given — right or wrong. ' +
+            'Timing only the correct ones would flatter a model that gives up quickly. ' +
+            (correctLatencies.length
+              ? `Correct answers alone: ${(median(correctLatencies) / 1000).toFixed(1)}s. `
+              : '') +
+            "Measured on the model's own attempt, with retries excluded."
+          }
         />
         <Stat
           label="Target"
@@ -188,6 +197,9 @@ function ResultRow({
   const typical = player.latencies.length > 0
     ? `${(median(player.latencies) / 1000).toFixed(1)}s`
     : '—'
+  const typicalCorrect = player.correctLatencies.length > 0
+    ? `${(median(player.correctLatencies) / 1000).toFixed(1)}s`
+    : null
 
   return (
     <div className={classes.join(' ')}>
@@ -226,8 +238,9 @@ function ResultRow({
       <div
         className="tf-row-record"
         title={
-          `${player.solved} solved of ${player.roundsPlayed} answered · ` +
-          `median answering time ${typical}`
+          `${player.solved} solved of ${player.roundsPlayed} puzzles · ` +
+          `median time to answer ${typical}, over every answer right or wrong` +
+          (typicalCorrect ? ` · ${typicalCorrect} over correct answers alone` : '')
         }
       >
         <span className="tf-rate">{rate}</span>

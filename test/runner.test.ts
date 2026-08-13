@@ -2252,3 +2252,135 @@ test('noting an answer twice does not duplicate it on the board', () => {
   assert.equal(table.state.results.length, 1, 'one row per seat, however often it is noted')
   assert.equal(table.state.results[0].elapsedMs, 20, 'and the latest wins')
 })
+
+
+test('a model that never answered is not credited for "spotting" an impossible deal', async () => {
+  const sink = capture()
+  // Never returns anything usable, so every seat exhausts its attempts and the
+  // table falls back — and this game's fallback is `null`, the same value a
+  // deliberate "no solution" carries. Prose rather than an empty reply: both
+  // fall back, but an empty one is treated as transient and retried behind a
+  // backoff, which turned this test into a 54-second sleep.
+  mockOpenRouter(() => 'I would rather not answer that one.')
+
+  const settings = twentyFourSettings(2, { maxRounds: 12 })
+  await new MatchRunner(settings, 'test-key', sink.emit).run()
+
+  const tf = tableOf(finalSnapshot(sink), 'twentyfour')
+  assert.ok(tf)
+  assert.ok(tf.roundsPlayed > 0)
+
+  for (const player of tf.players) {
+    assert.equal(
+      player.solved,
+      0,
+      `${player.name} was credited with solving ${player.solved} puzzles without answering any`
+    )
+    assert.equal(player.score, 0, 'and cannot have won a round')
+    assert.equal(
+      player.latencies.length,
+      0,
+      'a round with no reply has no answering time to record'
+    )
+    assert.equal(player.correctLatencies.length, 0)
+  }
+
+  // About a quarter of those 30 deals were impossible, and on every one of them
+  // the old code graded the fallback as a correct "no solution".
+  for (const result of tf.results) {
+    assert.equal(result.verdict, 'none', 'silence is graded as no answer, not as an answer')
+  }
+  assert.ok(
+    logTexts(sink).some((t) => /did not answer/.test(t)),
+    'the operator is told the seat never answered'
+  )
+  assert.ok(
+    !logTexts(sink).some((t) => /correctly says there is no solution/.test(t)),
+    'and it is never described as having spotted anything'
+  )
+})
+
+test('a deliberate "no solution" is still credited, unlike silence', () => {
+  // The two must stay distinguishable at the engine, since both carry a null
+  // expression. Same impossible deal, two very different answers.
+  const table = new TwentyFourTable(
+    [
+      { id: 'said', name: 'Said so', modelId: 'm' },
+      { id: 'silent', name: 'Silent', modelId: 'm' }
+    ],
+    { targetScore: 0 }
+  )
+  table.startRound()
+  table.state.cards = [
+    { rank: 14, suit: 'c' },
+    { rank: 14, suit: 'd' },
+    { rank: 14, suit: 'h' },
+    { rank: 14, suit: 's' }
+  ]
+  table.state.solution = null
+  table.state.solvable = false
+
+  table.settleRound([
+    { playerId: 'said', expression: null, elapsedMs: 500 },
+    { playerId: 'silent', expression: null, noAnswer: true, elapsedMs: 500 }
+  ])
+
+  const byId = new Map(table.state.results.map((r) => [r.playerId, r]))
+  assert.equal(byId.get('said')?.verdict, 'correct', 'saying so on an impossible deal scores')
+  assert.equal(byId.get('said')?.won, true)
+  assert.equal(byId.get('silent')?.verdict, 'none', 'failing to answer does not')
+  assert.equal(byId.get('silent')?.won, false)
+  assert.equal(table.player('said')?.solved, 1)
+  assert.equal(table.player('silent')?.solved, 0)
+})
+
+test('24 answers reach the table log as they arrive, not in a batch at the end', async () => {
+  const sink = capture()
+  let call = 0
+  globalThis.fetch = (async (_url: string, init: { body: string }) => {
+    await new Promise((r) => setTimeout(r, 30 * ++call))
+    const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> }
+    const prompt = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: respondTwentyFour(prompt) } }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0 }
+      })
+    }
+  }) as unknown as typeof fetch
+
+  await new MatchRunner(twentyFourSettings(3, { maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  // Match on entries that name a seat: the opening line mentions that "every
+  // seat answers every puzzle", which a loose text match counts as an answer.
+  const entries = sink.events.flatMap((e) => (e.type === 'log' ? [e.entry] : []))
+  const isAnswer = (text: string, playerId?: string): boolean =>
+    Boolean(playerId) && / answers | correctly says there is no solution/.test(text)
+
+  const answerAt = entries
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => isAnswer(entry.text, entry.playerId))
+  const solutionLine = entries.findIndex((e) => /One solution:|no solution at all/.test(e.text))
+
+  assert.equal(answerAt.length, 3, 'every seat is reported')
+  assert.ok(solutionLine >= 0, 'the round is closed off with the solver’s answer')
+  for (const { entry, index } of answerAt) {
+    assert.ok(
+      index < solutionLine,
+      `"${entry.text}" was logged after the round closed rather than as it arrived`
+    )
+  }
+
+  // Each answer belongs to its own moment: a board update has to fall between
+  // two of them, or they were all flushed together at the end of the round.
+  const order = sink.events
+    .filter((e) => e.type === 'snapshot' || (e.type === 'log' && isAnswer(e.entry.text, e.entry.playerId)))
+    .map((e) => (e.type === 'snapshot' ? '<snapshot>' : '<answer>'))
+  assert.match(
+    order.join(' '),
+    /<answer> <snapshot> .*<answer>/,
+    'answers were logged back to back with no board update between them'
+  )
+})
