@@ -199,18 +199,50 @@ export class HeartsDriver implements GameDriver {
 
       table.setPass(seat.id, result.action)
       ctx.recordDecision(player, `passes ${result.action.map(cardCode).join(' ')}`, result)
-      // The cards themselves stay off the table log: naming them would hand
-      // every other seat information it is not entitled to.
-      ctx.log('action', `${player.name} passes three cards.`, player.id)
+      // The cards are named. The table log is spectator-only — it never reaches
+      // a prompt, and the felt already shows every hand face up — so hiding
+      // them here concealed nothing from the models and only made the log worse
+      // than the Reasoning feed beside it, which named them all along.
+      ctx.log(
+        'action',
+        `${player.name} passes ${result.action.map(cardCode).join(' ')}.`,
+        player.id
+      )
       ctx.pushSnapshot()
       await ctx.beat(0.4)
     }
 
     if (ctx.isStopping) return
-    table.completePass()
-    ctx.log('deal', 'Cards are passed and the hands are complete.')
+
+    // Two steps, each with a beat of its own. The exchange used to happen in a
+    // single call, so twelve cards changed hands between two frames and the
+    // pass was never actually visible: first the three cards leaving each hand
+    // are shown while they are still held, then the three that arrived.
+    table.revealPass()
+    ctx.log(
+      'deal',
+      'Everyone has chosen. These three leave each hand, going ' +
+        `${DIRECTION_PHRASE[table.state.passDirection]}.`
+    )
     ctx.pushSnapshot()
-    await ctx.beat()
+    await ctx.beat(1.4)
+    if (ctx.isStopping) return
+
+    table.completePass()
+    ctx.log(
+      'deal',
+      'And these three arrive — ' +
+        table.state.players
+          .map((p) => `${p.name} gets ${p.receivedCards.map(cardCode).join(' ')}`)
+          .join('; ') +
+        '.'
+    )
+    ctx.pushSnapshot()
+    await ctx.beat(1.4)
+    if (ctx.isStopping) return
+
+    table.beginPlay()
+    ctx.pushSnapshot()
   }
 
   private async playOneCard(): Promise<void> {

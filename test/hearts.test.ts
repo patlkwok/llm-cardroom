@@ -32,7 +32,13 @@ function key(card: Card): string {
   return cardCode(card)
 }
 
-/** Answers the pass for every seat, so a test can get straight to the play. */
+/**
+ * Answers the pass for every seat and runs the exchange right through to the
+ * first lead, so a test can get straight to the play.
+ *
+ * The exchange is three steps now, not one: the runner shows the cards leaving
+ * each hand and then the cards arriving, each for a beat of its own.
+ */
 function passAnything(table: HeartsTable): void {
   if (!table.passing) return
   for (;;) {
@@ -40,7 +46,9 @@ function passAnything(table: HeartsTable): void {
     if (!seat) break
     table.setPass(seat.id, seat.hand.slice(0, 3))
   }
+  table.revealPass()
   table.completePass()
+  table.beginPlay()
 }
 
 /**
@@ -270,7 +278,9 @@ test('no points fall on the first trick', () => {
         const pass = [...points, ...seat.hand.filter((c) => cardPoints(c) === 0)].slice(0, 3)
         table.setPass(seat.id, pass)
       }
+      table.revealPass()
       table.completePass()
+      table.beginPlay()
     }
 
     while (!table.trickComplete) {
@@ -397,7 +407,23 @@ test('the pass rotates left, right, across, hold and moves three cards each way'
         if (!seat) break
         table.setPass(seat.id, seat.hand.slice(0, 3))
       }
+
+      // The cards are named before they move, and are still held at that point:
+      // that is the whole reason the reveal is a step of its own.
+      table.revealPass()
+      for (const player of table.state.players) {
+        assert.equal(player.hand.length, CARDS_PER_HAND, 'nothing has moved yet')
+        assert.equal(player.passedCards.length, 3, 'but the three leaving are named')
+        for (const card of player.passedCards) {
+          assert.ok(
+            player.hand.some((held) => sameCard(held, card)),
+            `${player.name} is shown passing ${cardCode(card)} but no longer holds it`
+          )
+        }
+      }
+
       table.completePass()
+      table.beginPlay()
 
       for (const player of table.state.players) {
         assert.equal(player.hand.length, CARDS_PER_HAND, 'hands stay at 13 through the exchange')

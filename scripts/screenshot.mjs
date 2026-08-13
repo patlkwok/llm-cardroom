@@ -270,6 +270,15 @@ async function main() {
 
     await win.click('.start-button')
     await waitForCounter(win, /Hand [1-9]/)
+
+    // The pass is two steps of its own: the three cards leaving each hand,
+    // nudged towards the middle while still held, and then the three that
+    // arrived. Each holds for a beat, so both are catchable.
+    await win.waitForSelector('.card-pass-out', { timeout: 120000 })
+    await shoot(win, '06a-hearts-pass-out.png')
+    await win.waitForSelector('.card-pass-in', { timeout: 60000 })
+    await shoot(win, '06b-hearts-pass-in.png')
+
     // The frame worth having is a nearly complete trick with the hands still
     // full: it shows the fans, the trick and the seat plates all at once.
     // Two earlier attempts prove why this is a compound condition rather than a

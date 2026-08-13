@@ -4,6 +4,7 @@ import { MatchRunner } from '../src/main/games/runner.ts'
 import { solve } from '../src/main/games/twentyfour/solver.ts'
 import { TwentyFourTable } from '../src/main/games/twentyfour/engine.ts'
 import { defaultSettings, tableOf, type MatchEvent, type MatchSettings } from '../src/shared/types.ts'
+import { cardCode } from '../src/shared/cards.ts'
 
 const realFetch = globalThis.fetch
 
@@ -2394,4 +2395,132 @@ test('24 answers reach the table log as they arrive, not in a batch at the end',
     /<answer> <snapshot> .*<answer>/,
     'answers were logged back to back with no board update between them'
   )
+})
+
+
+test('the pass is two visible steps: cards leaving, then cards arriving', async () => {
+  const sink = capture()
+  mockOpenRouter(respondHearts, sink)
+
+  await new MatchRunner(heartsSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  const states = sink.events
+    .filter((e) => e.type === 'snapshot')
+    .map((e) => (e.type === 'snapshot' ? tableOf(e.snapshot, 'hearts') : undefined))
+    .filter((h) => h !== undefined)
+
+  const leaving = states.filter((h) => h.phase === 'passRevealed')
+  const arriving = states.filter((h) => h.phase === 'passReceived')
+  assert.ok(leaving.length > 0, 'no frame showed the cards on their way out')
+  assert.ok(arriving.length > 0, 'no frame showed the cards arriving')
+
+  // Step one: named but NOT yet moved. This is the point of the extra step —
+  // the operator can see which three are going while they are still in hand.
+  for (const frame of leaving) {
+    for (const player of frame.players) {
+      assert.equal(player.hand.length, 13, `${player.name} should still hold thirteen`)
+      assert.equal(player.passedCards.length, 3, `${player.name} should have three marked`)
+      for (const card of player.passedCards) {
+        assert.ok(
+          player.hand.some((held) => held.rank === card.rank && held.suit === card.suit),
+          `${player.name} is marked as passing ${cardCode(card)} but no longer holds it`
+        )
+      }
+      assert.equal(player.receivedCards.length, 0, 'nothing has arrived yet')
+    }
+  }
+
+  // Step two: moved. The three marked are now the ones that came in, and the
+  // three that went out are gone.
+  for (const frame of arriving) {
+    for (const player of frame.players) {
+      assert.equal(player.hand.length, 13, `${player.name} should be back to thirteen`)
+      assert.equal(player.receivedCards.length, 3)
+      for (const card of player.receivedCards) {
+        assert.ok(
+          player.hand.some((held) => held.rank === card.rank && held.suit === card.suit),
+          `${player.name} was given ${cardCode(card)} but does not hold it`
+        )
+      }
+      for (const card of player.passedCards) {
+        assert.ok(
+          !player.hand.some((held) => held.rank === card.rank && held.suit === card.suit),
+          `${player.name} passed ${cardCode(card)} but still holds it`
+        )
+      }
+    }
+    // Nobody plays until the exchange has been seen.
+    assert.equal(frame.currentTrick, null, 'the first trick has not started yet')
+    assert.equal(frame.actingSeatIndex, -1)
+  }
+
+  // What one seat passed is exactly what its recipient received.
+  const frame = arriving.at(-1)
+  if (!frame) throw new Error('no frame showed the cards arriving')
+  const offset = { left: 1, right: 3, across: 2, hold: 0 }[frame.passDirection]
+  const seats: (typeof frame.players)[number][] = frame.players
+  for (const player of seats) {
+    const recipient = seats[(player.seatIndex + offset) % 4]
+    assert.deepEqual(
+      recipient.receivedCards.map(cardCode).sort(),
+      player.passedCards.map(cardCode).sort(),
+      `${player.name}'s pass did not arrive at ${recipient.name}`
+    )
+  }
+
+  // And the steps are narrated in order, before the first card is led.
+  const texts = logTexts(sink)
+  const out = texts.findIndex((t) => /These three leave each hand/.test(t))
+  const inbound = texts.findIndex((t) => /these three arrive/.test(t))
+  const led = texts.findIndex((t) => /holds the two of clubs and leads/.test(t))
+  assert.ok(out >= 0 && inbound > out && led > inbound, 'the pass is narrated in order')
+
+  // The table log names the cards. It is spectator-only — it never reaches a
+  // prompt — so withholding them concealed nothing and only made it less useful
+  // than the Reasoning feed alongside, which named them all along.
+  const passLines = texts.filter((t) => / passes /.test(t))
+  assert.equal(passLines.length, 4, 'every seat pass is logged')
+  for (const line of passLines) {
+    assert.match(
+      line,
+      /passes (10|[2-9TJQKA])[cdhs] (10|[2-9TJQKA])[cdhs] (10|[2-9TJQKA])[cdhs]\./,
+      `the three cards should be named: ${line}`
+    )
+  }
+  // The arrival line says who ended up with what.
+  assert.match(texts[inbound], / gets (10|[2-9TJQKA])[cdhs] /, 'the arrivals are named too')
+
+  // But none of it may reach a model: the prompts are still only ever a
+  // seat's own hand.
+  for (const prompt of sink.prompts.filter((p) => p.includes('Legal plays:'))) {
+    const board = prompt.split('Scores (lowest wins)')[1]?.split('\n\n')[0] ?? ''
+    assert.equal(
+      board.match(/\b(10|[2-9TJQKA])[cdhs]\b/g),
+      null,
+      `another seat's cards leaked into a prompt: ${board}`
+    )
+  }
+})
+
+test('a hold hand skips the pass steps entirely', async () => {
+  const sink = capture()
+  mockOpenRouter(respondHearts, sink)
+
+  // Hand 4 is the hold; run four hands to reach it.
+  await new MatchRunner(heartsSettings({ maxRounds: 4 }), 'test-key', sink.emit).run()
+
+  const hold = sink.events
+    .filter((e) => e.type === 'snapshot')
+    .map((e) => (e.type === 'snapshot' ? tableOf(e.snapshot, 'hearts') : undefined))
+    // Split, not `h !== undefined && …`: TypeScript infers a type predicate for
+    // the simple form and not for the compound one.
+    .filter((h) => h !== undefined)
+    .filter((h) => h.passDirection === 'hold')
+  assert.ok(hold.length > 0, 'the fourth hand should be a hold')
+  for (const frame of hold) {
+    assert.ok(
+      frame.phase !== 'passing' && frame.phase !== 'passRevealed' && frame.phase !== 'passReceived',
+      'a hold hand has no pass to show'
+    )
+  }
 })

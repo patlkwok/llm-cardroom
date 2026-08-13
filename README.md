@@ -261,6 +261,10 @@ hearts** — only an actual heart does, which is the rule most often disputed, s
 it is stated explicitly in the system prompt. Shooting the moon scores 26 to
 everybody else rather than −26 to the shooter.
 
+The exchange is shown rather than done instantly: the three cards leaving each
+hand lean towards the middle of the table, then the three that arrived are
+ringed, each for a beat of its own.
+
 When only one card is legal it is played **without asking a model at all**: it
 removes a paid call and, more usefully, a failure surface, since asking a model
 to choose from one option can still burn three retries on a move that was never
@@ -292,7 +296,7 @@ match sorts the board into final standings.
 npm test
 ```
 
-209 tests. The load-bearing ones are invariants rather than examples: chip
+211 tests. The load-bearing ones are invariants rather than examples: chip
 conservation across randomised poker hands and repeated roster churn, per-seat
 bankroll accounting at blackjack, card conservation on the shoe, 52 cards and
 exactly 26 points conserved through every hearts hand, and exact-rational

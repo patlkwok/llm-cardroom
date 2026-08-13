@@ -49,6 +49,22 @@ const DIRECTION_LABEL: Record<string, string> = {
   hold: 'hold — no pass'
 }
 
+/** What the centre says while the three cards are on their way. */
+const PASS_STEP: Record<'out' | 'in', Record<string, string>> = {
+  out: {
+    left: 'These three are going left…',
+    right: 'These three are going right…',
+    across: 'These three are going across…',
+    hold: 'Nothing is passed this hand.'
+  },
+  in: {
+    left: '…and these three arrived from the right.',
+    right: '…and these three arrived from the left.',
+    across: '…and these three arrived from across.',
+    hold: 'Nothing was passed this hand.'
+  }
+}
+
 export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.Element {
   const seats = state.players
   // Lowest wins, so the leader is the *smallest* total. Everything about
@@ -56,6 +72,10 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
   const best = seats.length ? Math.min(...seats.map((p) => p.totalScore)) : 0
   const trick = state.currentTrick ?? state.lastTrick
   const trickIsLive = state.currentTrick !== null
+  const passing =
+    state.phase === 'passing' ||
+    state.phase === 'passRevealed' ||
+    state.phase === 'passReceived'
 
   return (
     <div className="felt felt-hearts">
@@ -85,7 +105,7 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
           <div className="hearts-trick-head">
             {state.phase === 'idle'
               ? 'Waiting to start'
-              : state.phase === 'passing'
+              : passing
                 ? `Hand ${state.handNumber} · ${DIRECTION_LABEL[state.passDirection]}`
                 : `Trick ${state.trickNumber} of 13`}
           </div>
@@ -107,7 +127,13 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
               ))
             ) : (
               <div className="hearts-trick-empty">
-                {state.phase === 'passing' ? 'Choosing cards to pass…' : 'No cards played yet.'}
+                {state.phase === 'passing'
+                  ? 'Choosing cards to pass…'
+                  : state.phase === 'passRevealed'
+                    ? PASS_STEP.out[state.passDirection]
+                    : state.phase === 'passReceived'
+                      ? PASS_STEP.in[state.passDirection]
+                      : 'No cards played yet.'}
               </div>
             )}
           </div>
@@ -248,7 +274,22 @@ function SeatBox({
         ) : (
           // The spectator sees every hand, exactly as at poker. The models never
           // do: their prompts render only their own.
-          <Fan cards={seat.hand} vertical={vertical} />
+          <Fan
+            cards={seat.hand}
+            vertical={vertical}
+            position={position}
+            // Both steps lean their three cards towards the middle of the
+            // table; the ring colour is what tells them apart, gold on the way
+            // out and green on arrival.
+            marked={
+              phase === 'passRevealed'
+                ? seat.passedCards
+                : phase === 'passReceived'
+                  ? seat.receivedCards
+                  : []
+            }
+            marking={phase === 'passRevealed' ? 'out' : 'in'}
+          />
         )}
       </div>
     </div>
@@ -260,11 +301,36 @@ function SeatBox({
  * overlap. Width is the layout risk in this game, not seat count — which is why
  * the east and west hands fan downwards instead.
  */
-function Fan({ cards, vertical }: { cards: Card[]; vertical: boolean }): React.JSX.Element {
+function Fan({
+  cards,
+  vertical,
+  position,
+  marked = [],
+  marking = 'out'
+}: {
+  cards: Card[]
+  vertical: boolean
+  position: Compass
+  /** Cards to single out — the three leaving, or the three that just arrived. */
+  marked?: Card[]
+  marking?: 'out' | 'in'
+}): React.JSX.Element {
+  const isMarked = (card: Card): boolean =>
+    marked.some((c) => c.rank === card.rank && c.suit === card.suit)
+
   return (
     <div className={vertical ? 'card-fan card-fan-down' : 'card-fan'}>
       {cards.map((card) => (
-        <PlayingCard key={cardCode(card)} card={card} size="sm" />
+        <span
+          key={cardCode(card)}
+          className={
+            isMarked(card)
+              ? `card-slot card-pass-${marking} card-pass-${position}`
+              : 'card-slot'
+          }
+        >
+          <PlayingCard card={card} size="sm" />
+        </span>
       ))}
     </div>
   )

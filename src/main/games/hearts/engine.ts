@@ -193,11 +193,15 @@ export class HeartsTable {
   }
 
   /**
-   * Makes the exchange and starts the play. Any seat that never answered passes
-   * its three highest cards, so an interrupted match still leaves 13 cards in
-   * every hand rather than a half-finished exchange.
+   * Closes the choosing and names the three cards leaving each hand — **without
+   * moving them yet**. The cards are still held, so the felt can show which
+   * ones are on their way out before they vanish.
+   *
+   * Any seat that never answered passes its three highest cards, so an
+   * interrupted match still leaves 13 cards in every hand rather than a
+   * half-finished exchange.
    */
-  completePass(): void {
+  revealPass(): void {
     const s = this.state
     if (s.phase !== 'passing') throw new Error('no pass is in progress')
 
@@ -205,14 +209,31 @@ export class HeartsTable {
       const player = this.player(id)
       if (player) this.setPass(id, sortHand(player.hand).slice(-3))
     }
+    for (const player of s.players) {
+      player.passedCards = this.chosenPass.get(player.id) ?? []
+      player.receivedCards = []
+    }
+    s.phase = 'passRevealed'
+  }
 
-    // Take every card out first, then deal them on: doing it seat by seat would
-    // let a seat receive a card and pass it on in the same exchange.
+  /** True once every seat has chosen, before the cards actually move. */
+  get passRevealed(): boolean {
+    return this.state.phase === 'passRevealed'
+  }
+
+  /**
+   * Makes the exchange. Takes every card out first and only then deals them on:
+   * seat by seat would let a seat receive a card and pass it straight on in the
+   * same exchange.
+   */
+  completePass(): void {
+    const s = this.state
+    if (s.phase !== 'passRevealed') throw new Error('the pass has not been revealed yet')
+
     const outgoing = new Map<number, Card[]>()
     for (const player of s.players) {
-      const cards = this.chosenPass.get(player.id) ?? []
+      const cards = player.passedCards
       player.hand = player.hand.filter((held) => !cards.some((c) => sameCard(c, held)))
-      player.passedCards = cards
       outgoing.set(player.seatIndex, cards)
     }
     for (const player of s.players) {
@@ -223,6 +244,18 @@ export class HeartsTable {
     }
 
     this.chosenPass.clear()
+    s.phase = 'passReceived'
+  }
+
+  /** True once the cards have moved, before the first card is led. */
+  get passReceived(): boolean {
+    return this.state.phase === 'passReceived'
+  }
+
+  /** Opens the first trick, led by whoever holds the two of clubs. */
+  beginPlay(): void {
+    const s = this.state
+    if (s.phase !== 'passReceived') throw new Error('the pass is not finished')
     s.phase = 'playing'
     this.openTrick(this.seatHoldingTwoOfClubs())
   }

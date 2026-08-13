@@ -332,7 +332,21 @@ export interface HeartsPlayer {
 
 export interface HeartsState {
   kind: 'hearts'
-  phase: 'idle' | 'passing' | 'playing' | 'handComplete' | 'complete'
+  /**
+   * The exchange is three phases, not one. `passing` collects each seat's
+   * choice; `passRevealed` shows the three cards leaving each hand while they
+   * are *still held*; `passReceived` shows the three that arrived. Doing it in
+   * a single step meant twelve cards changed hands between two frames and the
+   * operator never saw the pass happen at all.
+   */
+  phase:
+    | 'idle'
+    | 'passing'
+    | 'passRevealed'
+    | 'passReceived'
+    | 'playing'
+    | 'handComplete'
+    | 'complete'
   handNumber: number
   handsPlayed: number
   passDirection: PassDirection

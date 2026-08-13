@@ -1231,7 +1231,15 @@ button:disabled {
   min-width: 0;
 }
 
-.card-fan .card + .card {
+/* Each card sits in its own slot so the pass animation has something to move
+   that is not the card itself; the overlap therefore lives on the slots. */
+.card-fan .card-slot {
+  display: flex;
+  flex: none;
+  transition: transform 0.25s ease;
+}
+
+.card-fan .card-slot + .card-slot {
   margin-left: -18px;
 }
 
@@ -1254,9 +1262,30 @@ button:disabled {
   gap: 2px;
 }
 
-.card-fan-down .card + .card {
+.card-fan-down .card-slot + .card-slot {
   margin-left: 0;
   margin-top: -32px;
+}
+
+/* Cards involved in the exchange lean towards the middle of the table, so which
+   way they move depends on where the seat is sitting. Both steps move: the ring
+   colour is what separates them — gold on the way out, green on arrival. */
+.card-pass-south { transform: translateY(-16px); }
+.card-pass-north { transform: translateY(16px); }
+.card-pass-west  { transform: translateX(16px); }
+.card-pass-east  { transform: translateX(-16px); }
+
+.card-pass-out,
+.card-pass-in {
+  z-index: 3;
+}
+
+.card-pass-out .card {
+  box-shadow: 0 0 0 2px var(--gold-bright), 0 6px 12px rgba(0, 0, 0, 0.55);
+}
+
+.card-pass-in .card {
+  box-shadow: 0 0 0 2px #7ee787, 0 6px 12px rgba(0, 0, 0, 0.55);
 }
 
 .hearts-centre {
