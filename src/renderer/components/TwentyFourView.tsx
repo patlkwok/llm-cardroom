@@ -11,6 +11,8 @@ interface Props {
   state: TwentyFourState
   thinking: Record<string, boolean>
   targetScore: number
+  /** The match is over — stopped or played out. Time to total everything up. */
+  finished: boolean
 }
 
 /** A = 1, J = 11, Q = 12, K = 13. Mirrors `puzzleValue` in the engine. */
@@ -53,9 +55,15 @@ function median(values: number[]): number {
     : Math.round((sorted[middle - 1] + sorted[middle]) / 2)
 }
 
-export function TwentyFourView({ state, thinking, targetScore }: Props): React.JSX.Element {
-  const players = state.players
-  const answering = state.phase === 'answering'
+export function TwentyFourView({ state, thinking, targetScore, finished }: Props): React.JSX.Element {
+  // Finished tables read as a scoreboard: best first, rather than seat order.
+  const players = finished
+    ? [...state.players].sort((a, b) => b.score - a.score || b.solved - a.solved)
+    : state.players
+  // A stopped match is not still thinking, however the round was left. Every
+  // in-flight indicator has to answer to this, or the final frame claims models
+  // are working on a puzzle that will never be scored.
+  const answering = state.phase === 'answering' && !finished
   const settled = state.phase === 'settled' || state.phase === 'complete'
 
   const attempts = players.reduce((sum, p) => sum + p.roundsPlayed, 0)
@@ -97,10 +105,19 @@ export function TwentyFourView({ state, thinking, targetScore }: Props): React.J
           </div>
         )}
         {answering && <div className="tf-racing">All models are answering…</div>}
+        {finished && !settled && (
+          <div className="tf-racing">Stopped before this puzzle was scored.</div>
+        )}
       </div>
 
       <div className="tf-board">
         {players.length === 0 && <div className="empty-hand">No models seated yet.</div>}
+        {finished && players.length > 0 && (
+          <div className="tf-board-head">
+            <span>Final standings</span>
+            <span className="tf-board-head-cols">solved · median</span>
+          </div>
+        )}
         {players.map((player) => (
           <ResultRow
             key={player.id}
@@ -109,6 +126,7 @@ export function TwentyFourView({ state, thinking, targetScore }: Props): React.J
             thinking={Boolean(thinking[player.id])}
             leading={player.score === best && best > 0}
             answering={answering}
+            finished={finished}
           />
         ))}
       </div>
@@ -147,18 +165,29 @@ function ResultRow({
   result,
   thinking,
   leading,
-  answering
+  answering,
+  finished
 }: {
   player: TwentyFourPlayer
   result?: TwentyFourResult
   thinking: boolean
   leading: boolean
   answering: boolean
+  finished: boolean
 }): React.JSX.Element {
   const classes = ['tf-row']
   if (result?.won) classes.push('tf-row-won')
   if (thinking) classes.push('tf-row-thinking')
   if (leading) classes.push('tf-row-leading')
+
+  // Per-seat solve rate and typical answering time — the two numbers the game
+  // is actually reported on, since arrival order alone measures throughput.
+  const rate = player.roundsPlayed > 0
+    ? `${Math.round((player.solved / player.roundsPlayed) * 100)}%`
+    : '—'
+  const typical = player.latencies.length > 0
+    ? `${(median(player.latencies) / 1000).toFixed(1)}s`
+    : '—'
 
   return (
     <div className={classes.join(' ')}>
@@ -171,7 +200,7 @@ function ResultRow({
       </div>
 
       <div className="tf-row-answer">
-        {thinking || (answering && !result) ? (
+        {!finished && (thinking || (answering && !result)) ? (
           <span className="tf-thinking-text">thinking…</span>
         ) : result ? (
           <>
@@ -189,12 +218,23 @@ function ResultRow({
       </div>
 
       <div className="tf-row-time">
-        {result && Number.isFinite(result.elapsedMs)
+        {!finished && result && Number.isFinite(result.elapsedMs)
           ? `${(result.elapsedMs / 1000).toFixed(1)}s`
           : ''}
       </div>
 
-      <div className="tf-row-score" title={`${player.solved} solved of ${player.roundsPlayed}`}>
+      <div
+        className="tf-row-record"
+        title={
+          `${player.solved} solved of ${player.roundsPlayed} answered · ` +
+          `median answering time ${typical}`
+        }
+      >
+        <span className="tf-rate">{rate}</span>
+        <span className="tf-typical">{typical}</span>
+      </div>
+
+      <div className="tf-row-score" title={`${player.score} rounds won`}>
         {player.score}
       </div>
     </div>

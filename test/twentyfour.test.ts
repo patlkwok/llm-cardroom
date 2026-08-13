@@ -1,12 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  add,
+  div,
   equals,
   formatFrac,
   frac,
+  mul,
   parseExpression,
+  sub,
   TARGET,
-  validateExpression
+  validateExpression,
+  type Frac
 } from '../src/main/games/twentyfour/expression.ts'
 import { isSolvable, solve } from '../src/main/games/twentyfour/solver.ts'
 import {
@@ -160,11 +165,14 @@ test('the solver agrees with an independent brute-force oracle', () => {
     return false
   }
 
+  // Every multiset from 1..13, not a sample: this is the check that the solver
+  // is complete, and a solver that misses deals would mark a correct "no
+  // solution" claim wrong and quietly hand out points for giving up.
   let checked = 0
   for (let a = 1; a <= 13; a++) {
     for (let b = a; b <= 13; b++) {
       for (let c = b; c <= 13; c++) {
-        for (let d = c; d <= 13; d += 3) {
+        for (let d = c; d <= 13; d++) {
           const values = [a, b, c, d]
           assert.equal(
             isSolvable(values),
@@ -176,7 +184,7 @@ test('the solver agrees with an independent brute-force oracle', () => {
       }
     }
   }
-  assert.ok(checked > 400, `should have checked a decent sample, saw ${checked}`)
+  assert.equal(checked, 1820, 'every four-card multiset was cross-checked')
 })
 
 test('every solution the solver returns actually validates', () => {
@@ -456,4 +464,152 @@ test('median reports the middle answering time', () => {
   assert.equal(median([5]), 5)
   assert.equal(median([9, 1, 5]), 5)
   assert.equal(median([1, 2, 3, 4]), 3)
+})
+
+test('accepting unary minus cannot disagree with the solver', () => {
+  // A real consistency risk. `validateExpression` accepts unary minus, but
+  // `solver.ts` never uses it — so if negation could reach 24 on a deal the
+  // solver calls impossible, one model would be graded CORRECT for an
+  // expression while another was graded CORRECT for saying "no solution", on
+  // the same deal. Both cannot be right.
+  //
+  // This settles it by exhaustion: the same collapse search, but every operand
+  // may be negated at every step and the final value may be negated too, which
+  // is the full closure of the four operators under sign change.
+  const negate = (x: Frac): Frac => ({ n: -x.n, d: x.d })
+
+  const reachableWithSigns = (values: number[]): boolean => {
+    const search = (terms: Frac[]): boolean => {
+      if (terms.length === 1) {
+        return equals(terms[0], TARGET) || equals(negate(terms[0]), TARGET)
+      }
+      for (let i = 0; i < terms.length; i++) {
+        for (let j = i + 1; j < terms.length; j++) {
+          const rest = terms.filter((_, k) => k !== i && k !== j)
+          for (const a of [terms[i], negate(terms[i])]) {
+            for (const b of [terms[j], negate(terms[j])]) {
+              const combined = [add(a, b), sub(a, b), sub(b, a), mul(a, b)]
+              if (b.n !== 0) combined.push(div(a, b))
+              if (a.n !== 0) combined.push(div(b, a))
+              for (const value of combined) {
+                if (search([...rest, value])) return true
+              }
+            }
+          }
+        }
+      }
+      return false
+    }
+    return search(values.map((v) => frac(v)))
+  }
+
+  let checked = 0
+  for (let a = 1; a <= 13; a++) {
+    for (let b = a; b <= 13; b++) {
+      for (let c = b; c <= 13; c++) {
+        for (let d = c; d <= 13; d++) {
+          const values = [a, b, c, d]
+          assert.equal(
+            reachableWithSigns(values),
+            isSolvable(values),
+            `negation changes the answer for ${values.join(',')} — a model could then ` +
+              'be marked correct for an expression on a deal the app calls impossible'
+          )
+          checked++
+        }
+      }
+    }
+  }
+  assert.equal(checked, 1820)
+})
+
+test('a deal is either solvable or not, and the grader never says both', () => {
+  // The invariant the test above protects, stated directly: on any one deal an
+  // expression and a denial must not both score. Note the two branches — on an
+  // unsolvable deal there is no expression to offer, so only the denial is
+  // gradeable, and asking a player to "play the solution" there would just be
+  // a second denial.
+  let solvableSeen = 0
+  let unsolvableSeen = 0
+
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const table = newTable(0)
+    table.startRound()
+    const solution = table.state.solution
+
+    if (solution === null) {
+      unsolvableSeen++
+      table.settleRound([{ playerId: 'b', expression: null, elapsedMs: 200 }])
+      const denial = table.state.results.find((r) => r.playerId === 'b')
+      assert.equal(
+        denial?.verdict,
+        'correct',
+        `"no solution" should score on the impossible deal ${table.values.join(',')}`
+      )
+    } else {
+      solvableSeen++
+      table.settleRound([
+        { playerId: 'a', expression: solution, elapsedMs: 100 },
+        { playerId: 'b', expression: null, elapsedMs: 200 }
+      ])
+      const byId = new Map(table.state.results.map((r) => [r.playerId, r]))
+      assert.equal(
+        byId.get('a')?.verdict,
+        'correct',
+        `the solver's own answer should score on ${table.values.join(',')}`
+      )
+      assert.equal(
+        byId.get('b')?.verdict,
+        'wrong',
+        `"no solution" must not also score on ${table.values.join(',')}`
+      )
+      assert.equal(byId.get('a')?.won, true, 'and the correct answer takes the round')
+    }
+  }
+
+  // Both branches must actually have been exercised, or this proves nothing.
+  assert.ok(solvableSeen > 0, 'no solvable deals appeared')
+  assert.ok(unsolvableSeen > 0, 'no impossible deals appeared')
+})
+
+test('grading a hand-checked set of answers gives the expected verdicts', () => {
+  // Worked by hand, so the grader is pinned against arithmetic rather than
+  // against itself: 6,4,3,2 makes 24 several ways.
+  const table = newTable(0)
+  table.startRound()
+  table.state.cards = [
+    { rank: 6, suit: 'c' },
+    { rank: 4, suit: 'd' },
+    { rank: 3, suit: 'h' },
+    { rank: 2, suit: 's' }
+  ]
+  table.state.solution = solve(table.values)
+  table.state.solvable = true
+
+  const cases: Array<[string, string | null, string, string | undefined]> = [
+    // expression, ..., expected verdict, expected value label
+    ['6 * 4 * (3 - 2)', null, 'correct', '24'],
+    ['(6 + 2) * 3 * 4 / 4', null, 'invalid', undefined],   // uses 4 twice
+    ['6 + 4 + 3 + 2', null, 'wrong', '15'],
+    ['6 * 4 + 3 - 2', null, 'wrong', '25'],
+    ['6 * 4 / (3 - 2)', null, 'correct', '24'],
+    ['6 / ((3 - 2) / 4)', null, 'correct', '24'],           // exact division
+    ['6 * 4', null, 'invalid', undefined],                  // leaves cards out
+    ['6 * 4 * (3 - 3)', null, 'invalid', undefined],        // wrong multiset
+    ['banana', null, 'invalid', undefined]
+  ]
+
+  for (const [expression, , verdict, valueLabel] of cases) {
+    const fresh = newTable(0)
+    fresh.state.cards = table.state.cards
+    fresh.state.solution = table.state.solution
+    fresh.state.solvable = true
+    fresh.state.phase = 'answering'
+    fresh.settleRound([{ playerId: 'a', expression, elapsedMs: 10 }])
+    const result = fresh.state.results.find((r) => r.playerId === 'a')
+    assert.equal(result?.verdict, verdict, `"${expression}" should be ${verdict}`)
+    if (valueLabel !== undefined) {
+      assert.equal(result?.valueLabel, valueLabel, `"${expression}" value`)
+    }
+  }
 })

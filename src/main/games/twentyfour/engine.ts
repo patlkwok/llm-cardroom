@@ -145,11 +145,36 @@ export class TwentyFourTable {
   }
 
   /**
+   * Grades one answer the moment it lands, without waiting for the rest.
+   *
+   * Whether an answer is *correct* depends only on that answer, so it can be
+   * judged and shown immediately; only the rank and the win depend on everyone
+   * else, and those are filled in by `settleRound`. This is what lets the felt
+   * show answers arriving one by one instead of all appearing at the end.
+   */
+  noteAnswer(answer: TwentyFourAnswer): TwentyFourResult {
+    const s = this.state
+    const player = this.player(answer.playerId)
+    if (!player) throw new Error(`no such seat: ${answer.playerId}`)
+
+    const result = this.grade(player, answer, this.values)
+    player.lastResult = result
+
+    // Replace rather than append: a seat answers a round exactly once, and
+    // re-noting must not leave two rows for it on the board.
+    const existing = s.results.findIndex((r) => r.playerId === answer.playerId)
+    if (existing === -1) s.results.push(result)
+    else s.results[existing] = result
+    return result
+  }
+
+  /**
    * Grades every answer and awards the round.
    *
    * Pure: given the same answers it always produces the same result, including
    * the same winner, because ordering comes entirely from the supplied
-   * `elapsedMs` and never from a clock read here.
+   * `elapsedMs` and never from a clock read here. Answers already passed to
+   * `noteAnswer` are re-graded to the same verdict, so calling both is safe.
    */
   settleRound(answers: TwentyFourAnswer[]): void {
     const s = this.state

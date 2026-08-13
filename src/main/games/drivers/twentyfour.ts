@@ -220,7 +220,7 @@ export class TwentyFourDriver implements GameDriver {
       )
     }
 
-    answers.push({
+    const answer = {
       playerId: player.id,
       expression: result.action,
       // The attempt that produced the answer, NOT the wall clock. `agent.ts`
@@ -228,7 +228,14 @@ export class TwentyFourDriver implements GameDriver {
       // them, so ranking on total latency would let rate limiting decide the
       // round for reasons that have nothing to do with the puzzle.
       elapsedMs: result.finalAttemptMs
-    })
+    }
+    answers.push(answer)
+
+    // Graded here rather than at the end of the round, so this seat's verdict
+    // is on the felt the moment it arrives instead of every answer appearing
+    // at once when the slowest model finally returns. Only the rank and the
+    // win need everybody, and `settleRound` fills those in.
+    this.table.noteAnswer(answer)
     ctx.recordDecision(player, result.action === null ? 'answers none' : `answers ${result.action}`, result)
   }
 

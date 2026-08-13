@@ -2,6 +2,7 @@ import test, { afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { MatchRunner } from '../src/main/games/runner.ts'
 import { solve } from '../src/main/games/twentyfour/solver.ts'
+import { TwentyFourTable } from '../src/main/games/twentyfour/engine.ts'
 import { defaultSettings, tableOf, type MatchEvent, type MatchSettings } from '../src/shared/types.ts'
 
 const realFetch = globalThis.fetch
@@ -1991,6 +1992,13 @@ test('a rate-limited model is not punished for its retry when the round is score
 
 /* ------------------------------------------------- truncated replies */
 
+/** A one-round blackjack table that is guaranteed to ask the model something. */
+function betSizingSettings(): MatchSettings {
+  const settings = blackjackSettings({ maxRounds: 1 })
+  settings.blackjack = { ...settings.blackjack, modelChoosesBet: true }
+  return settings
+}
+
 /**
  * A reasoning model that spends its whole budget thinking. It answers only
  * once `max_tokens` is at least `needs`, and reports `finish_reason: "length"`
@@ -2028,9 +2036,14 @@ test('a reply cut off at the token ceiling is retried with more room, not correc
   const sink = capture()
   const budgets: number[] = []
   // Needs more than the 4000-token default, but less than one escalation gives.
-  mockThinker(9000, JSON.stringify({ reasoning: 'Standing.', action: 'stand' }), budgets)
+  // One reply satisfies both prompt shapes: `bet` for the wager, `action` for
+  // the play.
+  mockThinker(9000, JSON.stringify({ reasoning: 'Standing.', action: 'stand', bet: 25 }), budgets)
 
-  await new MatchRunner(blackjackSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+  // Self-sizing bets guarantee a call every round. Without them a natural — or
+  // a dealer natural — resolves the deal with no decision to make, so a
+  // one-round match could ask nothing at all and this flaked about 1 run in 10.
+  await new MatchRunner(betSizingSettings(), 'test-key', sink.emit).run()
 
   assert.ok(budgets.length >= 2, 'it should have tried again')
   assert.ok(
@@ -2061,9 +2074,9 @@ test('a reply cut off at the token ceiling is retried with more room, not correc
 test('a model that answers within budget is never given a bigger one', async () => {
   const sink = capture()
   const budgets: number[] = []
-  mockThinker(0, JSON.stringify({ reasoning: 'Standing.', action: 'stand' }), budgets)
+  mockThinker(0, JSON.stringify({ reasoning: 'Standing.', action: 'stand', bet: 25 }), budgets)
 
-  await new MatchRunner(blackjackSettings({ maxRounds: 2 }), 'test-key', sink.emit).run()
+  await new MatchRunner(betSizingSettings(), 'test-key', sink.emit).run()
 
   assert.ok(budgets.length > 0)
   assert.equal(new Set(budgets).size, 1, 'the budget only grows in response to truncation')
@@ -2078,8 +2091,8 @@ test('the 24 puzzle starts with more thinking room than a menu choice does', asy
   const puzzleBudget = budgets[0]
 
   budgets.length = 0
-  mockThinker(0, JSON.stringify({ reasoning: 'Standing.', action: 'stand' }), budgets)
-  await new MatchRunner(blackjackSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+  mockThinker(0, JSON.stringify({ reasoning: 'Standing.', action: 'stand', bet: 25 }), budgets)
+  await new MatchRunner(betSizingSettings(), 'test-key', sink.emit).run()
 
   assert.ok(
     puzzleBudget > budgets[0],
@@ -2165,4 +2178,77 @@ test('a completed trick stays on the felt with its winner before being swept up'
   // The trick that follows must actually start fresh, not inherit the old one.
   const opened = states.filter((h) => h.currentTrick !== null && h.currentTrick.plays.length === 0)
   assert.ok(opened.length > 0, 'the next trick is opened as its own step')
+})
+
+
+test('24 answers appear one at a time, not all at once when the last lands', async () => {
+  const sink = capture()
+  // Staggered replies, so there is a real window in which some seats have
+  // answered and others have not.
+  let call = 0
+  globalThis.fetch = (async (_url: string, init: { body: string }) => {
+    const delay = 30 * ++call
+    await new Promise((r) => setTimeout(r, delay))
+    const body = JSON.parse(init.body) as { messages: Array<{ role: string; content: string }> }
+    const prompt = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: respondTwentyFour(prompt) } }, ],
+        usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0 }
+      })
+    }
+  }) as unknown as typeof fetch
+
+  await new MatchRunner(twentyFourSettings(4, { maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  const states = sink.events
+    .filter((e) => e.type === 'snapshot')
+    .map((e) => (e.type === 'snapshot' ? tableOf(e.snapshot, 'twentyfour') : undefined))
+    .filter((tf) => tf !== undefined)
+
+  // The frame that proves it: still answering, with some seats graded and at
+  // least one still out. Grading only at the end of the round meant no such
+  // frame existed and every answer appeared together.
+  const partial = states.filter((tf) => {
+    const answered = tf.players.filter((p) => p.lastResult !== undefined).length
+    return tf.phase === 'answering' && answered > 0 && answered < tf.players.length
+  })
+  assert.ok(
+    partial.length > 0,
+    'no snapshot showed a partly answered board, so answers did not arrive one by one'
+  )
+
+  // And the count only ever grows within the round — an answer never vanishes.
+  let seen = 0
+  for (const tf of states) {
+    if (tf.phase !== 'answering') continue
+    const answered = tf.players.filter((p) => p.lastResult !== undefined).length
+    assert.ok(answered >= seen, `answers went backwards: ${seen} then ${answered}`)
+    seen = answered
+  }
+
+  // Verdicts shown early must survive settling unchanged: only rank and the win
+  // depend on everybody else.
+  const tf = tableOf(finalSnapshot(sink), 'twentyfour')
+  assert.ok(tf)
+  assert.equal(tf.results.length, 4, 'every seat has a final result')
+  assert.equal(tf.results.filter((r) => r.won).length, 1, 'exactly one winner')
+  for (const player of tf.players) {
+    assert.equal(player.roundsPlayed, 1)
+    assert.ok(player.lastResult, `${player.name} kept its result`)
+  }
+})
+
+test('noting an answer twice does not duplicate it on the board', () => {
+  const table = new TwentyFourTable(
+    [{ id: 'a', name: 'Bot0', modelId: 'm' }],
+    { targetScore: 0 }
+  )
+  table.startRound()
+  table.noteAnswer({ playerId: 'a', expression: 'none', elapsedMs: 10 })
+  table.noteAnswer({ playerId: 'a', expression: 'none', elapsedMs: 20 })
+  assert.equal(table.state.results.length, 1, 'one row per seat, however often it is noted')
+  assert.equal(table.state.results[0].elapsedMs, 20, 'and the latest wins')
 })

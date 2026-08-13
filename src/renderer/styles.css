@@ -1058,10 +1058,15 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(0, 150px) minmax(0, 1fr) minmax(0, 150px);
   grid-template-rows: auto minmax(0, 1fr) auto;
+  /* North and south span the FULL width. Confined to the centre column they
+     were ~340px wide, and a 132px plate plus a thirteen-card fan needs ~360 —
+     so the cards spilled straight out of the seat box. The side seats occupy
+     the middle row only, so there is nothing for the top and bottom rows to
+     collide with. */
   grid-template-areas:
-    ".    north  ."
-    "west centre east"
-    ".    south  .";
+    "north north  north"
+    "west  centre east"
+    "south south  south";
   align-items: center;
   justify-items: center;
   gap: 6px 10px;
@@ -1231,9 +1236,12 @@ button:disabled {
   min-height: 0;
 }
 
+/* 22px of each card has to stay visible, not 14px: the corner stacks the rank
+   above the suit (3px inset + 9px rank + 8px suit), so a deeper overlap hid the
+   suit entirely and left a column of bare numbers. */
 .card-fan-down .card + .card {
   margin-left: 0;
-  margin-top: -34px;
+  margin-top: -26px;
 }
 
 .hearts-centre {
@@ -1427,7 +1435,7 @@ button:disabled {
   flex-direction: column;
   gap: 5px;
   width: 100%;
-  max-width: 620px;
+  max-width: 680px;
   /* Same lesson as the other felts: the middle child of a flex column must be
      allowed to shrink, or it shoves the stats bar off the bottom. */
   flex: 1 1 auto;
@@ -1438,13 +1446,51 @@ button:disabled {
 
 .tf-row {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr) 44px 28px;
+  grid-template-columns: 132px minmax(0, 1fr) 40px 52px 26px;
   align-items: center;
   gap: 8px;
   padding: 5px 10px;
   border-radius: 8px;
   border: 1px solid transparent;
   background: rgba(0, 0, 0, 0.24);
+}
+
+.tf-board-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+  padding: 0 10px 2px;
+}
+
+.tf-board-head-cols {
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--text-faint);
+}
+
+/* Solve rate over typical answering time: the pair of numbers this game is
+   reported on, because arrival order on its own measures throughput. */
+.tf-row-record {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+
+.tf-rate {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7ee787;
+}
+
+.tf-typical {
+  font-size: 9.5px;
+  color: var(--text-dim);
 }
 
 .tf-row-thinking {
@@ -1869,6 +1915,33 @@ button:disabled {
   font-size: 12px;
   line-height: 1.5;
   color: #c9d1d9;
+  /* Traces arrive as one long line; without this a single unbroken run of
+     characters would push the feed sideways. */
+  overflow-wrap: anywhere;
+}
+
+/* Six lines is enough for an ordinary justification and short enough that a
+   reasoning model's essay does not bury the rest of the feed. */
+.thought-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.thought-more {
+  margin-top: 4px;
+  padding: 1px 0;
+  background: none;
+  border: none;
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.thought-more:hover {
+  text-decoration: underline;
 }
 
 .thought-fallback {

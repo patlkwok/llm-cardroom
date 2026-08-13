@@ -310,7 +310,18 @@ async function main() {
     // is what guarantees the round is over rather than still being answered.
     await win.waitForSelector('.tf-solution', { timeout: 120000 })
     await shoot(win, '07-twentyfour-round.png')
+
+    // Let a few more puzzles run so the per-seat records differ, then stop and
+    // photograph the final standings — solve rate and typical answering time
+    // per model, which is what the game is actually reported on.
+    await win.waitForFunction(
+      () => /Puzzle [4-9]/.test(document.querySelector('.status-counter')?.textContent || ''),
+      null,
+      { timeout: 180000 }
+    )
     await stopMatch(win)
+    await win.waitForSelector('.tf-board-head', { timeout: 20000 })
+    await shoot(win, '08-twentyfour-final.png')
     await win.setViewportSize({ width: 1440, height: 940 })
 
     console.log(`\nScreenshots written to ${OUT_DIR}`)

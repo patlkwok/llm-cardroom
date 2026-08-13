@@ -137,7 +137,7 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
 
     const outcome = parse(text)
     if (outcome.reasoning) lastReasoning = outcome.reasoning
-    else if (reasoningChannel) lastReasoning = firstSentences(reasoningChannel)
+    else if (reasoningChannel) lastReasoning = capReasoning(reasoningChannel)
 
     if (outcome.ok && outcome.value !== undefined) {
       return {
@@ -195,13 +195,17 @@ export async function requestDecision<T>(request: DecisionRequest<T>): Promise<A
   }
 }
 
-/** Trims a long reasoning trace down to something a table can display. */
-function firstSentences(text: string, limit = 320): string {
+/**
+ * A safety cap on a reasoning trace, not a display limit.
+ *
+ * This used to cut to the first ~320 characters, which meant the full trace
+ * never reached the renderer and so could not be expanded there however the UI
+ * asked for it. Clamping is the UI's job; this only stops a pathological trace
+ * from bloating the event stream and the feed's 250-record buffer.
+ */
+function capReasoning(text: string, limit = 4000): string {
   const clean = text.replace(/\s+/g, ' ').trim()
-  if (clean.length <= limit) return clean
-  const cut = clean.slice(0, limit)
-  const stop = cut.lastIndexOf('. ')
-  return `${stop > 80 ? cut.slice(0, stop + 1) : cut}…`
+  return clean.length <= limit ? clean : `${clean.slice(0, limit)}…`
 }
 
 function sleep(ms: number): Promise<void> {

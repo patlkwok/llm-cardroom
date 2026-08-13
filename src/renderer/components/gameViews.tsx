@@ -16,6 +16,11 @@ export interface GameViewProps {
   thinking: Record<string, boolean>
 }
 
+/** The match has stopped for good, so final totals are worth showing. */
+function isFinished(snapshot: MatchSnapshot | null): boolean {
+  return snapshot?.status === 'finished' || snapshot?.status === 'error'
+}
+
 type GameView = (props: GameViewProps) => React.JSX.Element
 
 /**
@@ -48,6 +53,7 @@ export const GAME_VIEWS: Partial<Record<GameKind, GameView>> = {
       state={tableOf(snapshot, 'twentyfour') ?? emptyTwentyFourState(settings)}
       thinking={thinking}
       targetScore={settings.twentyfour.targetScore}
+      finished={isFinished(snapshot)}
     />
   )
 }

@@ -156,7 +156,10 @@ export async function chatCompletion(request: ChatRequest): Promise<ChatResult> 
   const {
     apiKey, model, messages, reasoningEffort,
     maxTokens = tokenBudget(reasoningEffort),
-    timeoutMs = 180_000, signal
+    // A reasoning model working on a hard question genuinely takes minutes:
+    // 180s was cutting off models that were still thinking, and raising the
+    // token budget made that more likely rather than less.
+    timeoutMs = 300_000, signal
   } = request
 
   if (!apiKey) throw new OpenRouterError('No OpenRouter API key configured.')

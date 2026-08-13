@@ -501,3 +501,203 @@ test('forced plays are common enough to be worth skipping the model call for', (
   assert.ok(rate > 0.05, `forced plays should be common, saw ${(rate * 100).toFixed(1)}%`)
   assert.ok(rate < 0.6, `but not the majority of plays, saw ${(rate * 100).toFixed(1)}%`)
 })
+
+/* -------------------------------------------- trick evaluation, verified */
+
+/**
+ * Who takes a trick, worked out a different way on purpose: filter to the led
+ * suit first, then take the maximum, rather than scanning with a running best.
+ * Disagreement between the two means one of them is wrong.
+ */
+function independentWinner(plays: Array<{ seatIndex: number; card: Card }>): number {
+  const ledSuit = plays[0].card.suit
+  const followed = plays.filter((p) => p.card.suit === ledSuit)
+  let best = followed[0]
+  for (const play of followed) if (play.card.rank > best.card.rank) best = play
+  return best.seatIndex
+}
+
+/** Points in a trick, counted independently of the engine's running total. */
+function independentPoints(plays: Array<{ card: Card }>): number {
+  let points = 0
+  for (const { card } of plays) {
+    if (card.suit === 'h') points += 1
+    else if (card.rank === 12 && card.suit === 's') points += 13
+  }
+  return points
+}
+
+test('the trick winner matches an independent evaluation over a full match', () => {
+  const table = newTable(10_000)
+  let checked = 0
+
+  for (let hand = 0; hand < 15; hand++) {
+    table.startHand()
+    passAnything(table)
+    let guard = 0
+    while (!table.handComplete && guard++ < 200) {
+      const seat = table.actingPlayer!
+      const legal = table.legalPlays(seat.seatIndex)
+      table.playCard(seat.seatIndex, legal[Math.floor(Math.random() * legal.length)])
+      if (table.trickComplete) {
+        const before = table.state.currentTrick!.plays.map((p) => ({
+          seatIndex: p.seatIndex,
+          card: p.card
+        }))
+        const expectedWinner = independentWinner(before)
+        const expectedPoints = independentPoints(before)
+
+        const trick = table.resolveTrick()
+        assert.equal(
+          trick.winnerSeatIndex,
+          expectedWinner,
+          `trick ${trick.number}: ${before.map((p) => cardCode(p.card)).join(' ')}`
+        )
+        assert.equal(trick.points, expectedPoints, 'points in the trick')
+        assert.equal(
+          trick.winnerName,
+          table.state.players[expectedWinner].name,
+          'the name matches the seat'
+        )
+        checked++
+        if (table.awaitingNextTrick) table.startNextTrick()
+      }
+    }
+    table.scoreHand()
+  }
+
+  assert.equal(checked, 15 * 13, 'every trick of every hand was cross-checked')
+})
+
+test('the highest card of the LED suit wins, not the highest card played', () => {
+  // The case that separates a correct implementation from a plausible one: an
+  // ace of another suit must lose to a two of the led suit.
+  const cases: Array<{ plays: Array<[number, Card]>; winner: number; points: number }> = [
+    {
+      // Clubs led low; an off-suit ace and king cannot take it.
+      plays: [
+        [0, { rank: 2, suit: 'c' }],
+        [1, { rank: 14, suit: 'd' }],
+        [2, { rank: 13, suit: 'h' }],
+        [3, { rank: 14, suit: 's' }]
+      ],
+      winner: 0,
+      points: 1
+    },
+    {
+      // Ace of the led suit beats the king of it.
+      plays: [
+        [0, { rank: 13, suit: 's' }],
+        [1, { rank: 14, suit: 's' }],
+        [2, { rank: 2, suit: 's' }],
+        [3, { rank: 12, suit: 's' }]
+      ],
+      winner: 1,
+      points: 13
+    },
+    {
+      // Nobody follows: the leader keeps it however small the card.
+      plays: [
+        [0, { rank: 3, suit: 'd' }],
+        [1, { rank: 14, suit: 'h' }],
+        [2, { rank: 13, suit: 'h' }],
+        [3, { rank: 12, suit: 'c' }]
+      ],
+      winner: 0,
+      points: 2
+    },
+    {
+      // The queen of spades falling on someone else's trick still costs 13.
+      plays: [
+        [2, { rank: 9, suit: 'h' }],
+        [3, { rank: 10, suit: 'h' }],
+        [0, { rank: 12, suit: 's' }],
+        [1, { rank: 4, suit: 'h' }]
+      ],
+      winner: 3,
+      points: 16
+    }
+  ]
+
+  for (const { plays, winner, points } of cases) {
+    const table = newTable(10_000)
+    table.startHand()
+    const s = table.state
+    s.phase = 'playing'
+    s.trickNumber = 5
+    s.heartsBroken = true
+    s.leadSeatIndex = plays[0][0]
+    s.actingSeatIndex = plays[0][0]
+    s.currentTrick = { number: 5, leadSuit: plays[0][1].suit, plays: [], points: 0 }
+    // Give each seat exactly the card it must play, so `legalPlays` allows it.
+    for (const [seatIndex, card] of plays) s.players[seatIndex].hand = [card]
+
+    for (const [seatIndex, card] of plays) {
+      s.actingSeatIndex = seatIndex
+      table.playCard(seatIndex, card)
+    }
+    const trick = table.resolveTrick()
+    const label = plays.map(([, c]) => cardCode(c)).join(' ')
+    assert.equal(trick.winnerSeatIndex, winner, `winner of ${label}`)
+    assert.equal(trick.points, points, `points in ${label}`)
+    assert.equal(
+      independentWinner(plays.map(([seatIndex, card]) => ({ seatIndex, card }))),
+      winner,
+      'the fixture agrees with the independent evaluator too'
+    )
+  }
+})
+
+test('the trick winner leads the next trick', () => {
+  const table = newTable(10_000)
+  table.startHand()
+  passAnything(table)
+
+  let guard = 0
+  while (!table.handComplete && guard++ < 200) {
+    const seat = table.actingPlayer!
+    const legal = table.legalPlays(seat.seatIndex)
+    table.playCard(seat.seatIndex, legal[0])
+    if (table.trickComplete) {
+      const trick = table.resolveTrick()
+      if (table.awaitingNextTrick) {
+        table.startNextTrick()
+        assert.equal(
+          table.state.leadSeatIndex,
+          trick.winnerSeatIndex,
+          `trick ${trick.number} was taken by seat ${trick.winnerSeatIndex} but seat ` +
+            `${table.state.leadSeatIndex} led the next one`
+        )
+        assert.equal(table.state.actingSeatIndex, trick.winnerSeatIndex)
+      }
+    }
+  }
+})
+
+test('tricks won and points taken add up per seat across a hand', () => {
+  const table = newTable(10_000)
+  table.startHand()
+  passAnything(table)
+
+  const pointsBySeat = [0, 0, 0, 0]
+  const tricksBySeat = [0, 0, 0, 0]
+  let guard = 0
+  while (!table.handComplete && guard++ < 200) {
+    const seat = table.actingPlayer!
+    const legal = table.legalPlays(seat.seatIndex)
+    table.playCard(seat.seatIndex, legal[Math.floor(Math.random() * legal.length)])
+    if (table.trickComplete) {
+      const trick = table.resolveTrick()
+      pointsBySeat[trick.winnerSeatIndex!] += trick.points
+      tricksBySeat[trick.winnerSeatIndex!]++
+      if (table.awaitingNextTrick) table.startNextTrick()
+    }
+  }
+
+  for (const player of table.state.players) {
+    assert.equal(player.handScore, pointsBySeat[player.seatIndex], `${player.name} hand score`)
+    assert.equal(player.tricksWon, tricksBySeat[player.seatIndex], `${player.name} tricks won`)
+  }
+  assert.equal(pointsBySeat.reduce((a, b) => a + b, 0), POINTS_PER_HAND)
+  assert.equal(tricksBySeat.reduce((a, b) => a + b, 0), CARDS_PER_HAND)
+})

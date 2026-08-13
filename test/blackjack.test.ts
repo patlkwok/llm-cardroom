@@ -65,11 +65,25 @@ function playOut(t: BlackjackTable, allowSplits = false): void {
   }
 }
 
-/** Deals until the dealer's upcard is an ace, so insurance is on offer. */
+/**
+ * Deals until the dealer's upcard is an ace, so insurance is on offer.
+ *
+ * The seat must be able to survive the search. An ace shows about 1 round in
+ * 13, but a 1,000-chip bankroll at a 100-chip stake can go broke first — and a
+ * retired seat is never dealt in again, so the loop then spins to its limit and
+ * the test fails for a reason that has nothing to do with insurance. Callers
+ * pass a bankroll that cannot be exhausted; this asserts it rather than
+ * trusting them.
+ */
 function dealUntilAceUp(t: BlackjackTable, attempts = 500): boolean {
   for (let i = 0; i < attempts; i++) {
     t.startRound()
     if (t.awaitingInsurance) return true
+    assert.ok(
+      !only(t).busted,
+      `the seat went broke after ${i} rounds while looking for an ace upcard — ` +
+        'give this table a bankroll it cannot exhaust'
+    )
     // Not an ace up: play the round out and try the next one.
     playOut(t)
     t.playDealerTurn()
@@ -556,7 +570,7 @@ test('the table refuses more seats than it has', () => {
 /* ------------------------------------------------------------- insurance */
 
 test('insurance is offered only when the dealer shows an ace', () => {
-  const t = table({ offerInsurance: true })
+  const t = table({ offerInsurance: true, startingBankroll: 1_000_000 })
   assert.ok(dealUntilAceUp(t), 'an ace upcard should appear within 500 rounds')
   assert.equal(t.state.phase, 'insurance')
   assert.equal(t.state.insuranceOffered, true)
@@ -577,7 +591,7 @@ test('insurance is never offered when the rule is switched off', () => {
 })
 
 test('insurance costs half the stake and is taken from the bankroll', () => {
-  const t = table({ offerInsurance: true, baseBet: 100 })
+  const t = table({ offerInsurance: true, baseBet: 100, startingBankroll: 1_000_000 })
   assert.ok(dealUntilAceUp(t))
 
   const stake = only(t).hands[0].bet
@@ -592,7 +606,7 @@ test('insurance costs half the stake and is taken from the bankroll', () => {
 })
 
 test('declining insurance costs nothing and records the choice', () => {
-  const t = table({ offerInsurance: true })
+  const t = table({ offerInsurance: true, startingBankroll: 1_000_000 })
   assert.ok(dealUntilAceUp(t))
 
   const before = only(t).bankroll
@@ -638,7 +652,7 @@ test('a seat left unanswered when the offer closes has simply declined', () => {
 })
 
 test('insurance pays 2:1 against a dealer blackjack, cancelling the loss', () => {
-  const t = table({ offerInsurance: true })
+  const t = table({ offerInsurance: true, startingBankroll: 1_000_000 })
   t.startRound()
   only(t).hands = [{
     id: 'h1', cards: cards('Ts 9d'), bet: 100, status: 'stood',
@@ -658,7 +672,7 @@ test('insurance pays 2:1 against a dealer blackjack, cancelling the loss', () =>
 })
 
 test('insurance is lost when the dealer has no blackjack', () => {
-  const t = table({ offerInsurance: true })
+  const t = table({ offerInsurance: true, startingBankroll: 1_000_000 })
   t.startRound()
   only(t).hands = [{
     id: 'h1', cards: cards('Ts 8d'), bet: 100, status: 'stood',
@@ -676,7 +690,7 @@ test('insurance is lost when the dealer has no blackjack', () => {
 })
 
 test('a natural against a dealer natural pushes while insurance still pays', () => {
-  const t = table({ offerInsurance: true })
+  const t = table({ offerInsurance: true, startingBankroll: 1_000_000 })
   t.startRound()
   only(t).hands = [{
     id: 'h1', cards: cards('Ad Ks'), bet: 100, status: 'blackjack',

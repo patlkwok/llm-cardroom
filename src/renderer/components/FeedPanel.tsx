@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type {
   DecisionRecord,
   LogEntry,
@@ -28,6 +28,40 @@ export function colourFor(players: PlayerConfig[], playerId?: string): string {
 
 function timeOf(ts: number): string {
   return new Date(ts).toLocaleTimeString(undefined, { hour12: false })
+}
+
+/**
+ * A model's reasoning, clamped to a few lines with a toggle when there is more.
+ *
+ * The toggle appears only when the text genuinely does not fit, which is
+ * measured rather than guessed at from the character count: a short trace with
+ * long words can overflow and a long one with short words may not. Reasoning
+ * models on the 24 puzzle routinely produce far more than fits.
+ */
+function ReasoningText({ text }: { text: string }): React.JSX.Element {
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  const ref = useRef<HTMLParagraphElement>(null)
+
+  useLayoutEffect(() => {
+    const node = ref.current
+    if (!node) return
+    // Only meaningful while clamped; once expanded the element is its own size.
+    if (!expanded) setOverflows(node.scrollHeight - node.clientHeight > 2)
+  }, [text, expanded])
+
+  return (
+    <>
+      <p ref={ref} className={expanded ? 'thought-text' : 'thought-text thought-clamped'}>
+        {text}
+      </p>
+      {(overflows || expanded) && (
+        <button className="thought-more" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? 'Show less ▴' : 'Show more ▾'}
+        </button>
+      )}
+    </>
+  )
 }
 
 export function FeedPanel({ decisions, log, snapshot, players }: Props): React.JSX.Element {
@@ -81,7 +115,7 @@ export function FeedPanel({ decisions, log, snapshot, players }: Props): React.J
                   <span className="thought-action">{record.actionLabel}</span>
                   <span className="thought-time">{timeOf(record.ts)}</span>
                 </header>
-                <p className="thought-text">{record.reasoning || '(no reasoning given)'}</p>
+                <ReasoningText text={record.reasoning || '(no reasoning given)'} />
                 {record.fallback && (
                   <p className="thought-fallback">
                     The table played this for them: {record.fallback}

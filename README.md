@@ -119,7 +119,9 @@ file on disk holds nothing but the encrypted key.
   strictly for you: it is computed from everyone's cards, so a test asserts the
   prompt is byte-identical whether or not it has been calculated.
 - **Reasoning** is the interesting panel: each decision with the model's stated
-  justification, latency, token counts and cost.
+  justification, latency, token counts and cost. Long traces are clamped to a
+  few lines with a **Show more** toggle — reasoning models on the 24 puzzle
+  routinely write far more than fits.
 - **Table log** is the dealer's-eye narration of every card and action.
 - **Usage** totals tokens and spend per model.
 
@@ -279,7 +281,9 @@ Every seat answers at once, and the round goes to the fastest correct answer —
 timed on the model's own answering attempt, so a retry after rate limiting is
 not counted against it. Since arrival order otherwise measures throughput rather
 than skill, the two numbers actually worth reading are on the felt: **solve
-rate** and **median time**.
+rate** and **median time**, for the table and for each model. Answers appear as
+they arrive rather than all at once when the last one lands, and stopping the
+match sorts the board into final standings.
 
 ## Tests
 
@@ -287,7 +291,7 @@ rate** and **median time**.
 npm test
 ```
 
-197 tests. The load-bearing ones are invariants rather than examples: chip
+206 tests. The load-bearing ones are invariants rather than examples: chip
 conservation across randomised poker hands and repeated roster churn, per-seat
 bankroll accounting at blackjack, card conservation on the shoe, 52 cards and
 exactly 26 points conserved through every hearts hand, and exact-rational
