@@ -282,13 +282,13 @@ async function main() {
     // The frame worth having is a nearly complete trick with the hands still
     // full: it shows the fans, the trick and the seat plates all at once.
     // Two earlier attempts prove why this is a compound condition rather than a
-    // selector. Waiting for the first `.hearts-trick-play` caught a single card
-    // on an otherwise bare table; waiting for `.hearts-trick-result` caught
+    // selector. Waiting for the first `.trick-play` caught a single card
+    // on an otherwise bare table; waiting for `.trick-result` caught
     // trick 13 of 13, where every hand reads "out of cards" and the fans — the
     // whole width risk this capture exists to check — are not on screen at all.
     await win.waitForFunction(
       () => {
-        const played = document.querySelectorAll('.hearts-trick-play').length
+        const played = document.querySelectorAll('.trick-play').length
         const fan = document.querySelector('.card-fan')
         const held = fan ? fan.children.length : 0
         // A *completed* trick, still on the felt with its winner named — the
@@ -296,7 +296,7 @@ async function main() {
         // photographing. Held cards are required too, so the capture lands
         // mid-hand where the thirteen-card fans are still on screen: waiting
         // for the result alone caught trick 13 of 13, where every hand is empty.
-        return played === 4 && document.querySelector('.hearts-trick-result') && held >= 5
+        return played === 4 && document.querySelector('.trick-result') && held >= 5
       },
       null,
       { timeout: 120000 }

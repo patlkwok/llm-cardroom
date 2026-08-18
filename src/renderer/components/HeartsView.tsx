@@ -1,6 +1,17 @@
-import { cardCode, type Card } from '../../shared/cards.ts'
 import type { HeartsPlayer, HeartsState, MatchSettings } from '../../shared/types.ts'
-import { PlayingCard } from './PlayingCard.tsx'
+import {
+  COMPASS,
+  SeatHand,
+  SeatPlate,
+  Stat,
+  TrickCards,
+  TrickCentre,
+  TrickFlag,
+  TrickResult,
+  TrickSeat,
+  TrickTable,
+  type Compass
+} from './TrickTable.tsx'
 
 interface Props {
   state: HeartsState
@@ -82,12 +93,9 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
       {/* No felt watermark here: the seats fill the whole felt and are
           translucent, so the brand text showed straight through four hands of
           cards. Only visible in a rendered frame. */}
-      <div className="hearts-table">
+      <TrickTable>
         {seats.length === 0 && <div className="empty-hand">No models seated yet.</div>}
 
-        {/* Round the table: play passes to the left, so seat order runs
-            south → west → north → east, which is what the compass positions
-            below encode. */}
         {seats.map((seat) => (
           <SeatBox
             key={seat.id}
@@ -101,72 +109,55 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
           />
         ))}
 
-        <div className="hearts-centre">
-          <div className="hearts-trick-head">
-            {state.phase === 'idle'
+        <TrickCentre
+          heading={
+            state.phase === 'idle'
               ? 'Waiting to start'
               : passing
                 ? `Hand ${state.handNumber} · ${DIRECTION_LABEL[state.passDirection]}`
-                : `Trick ${state.trickNumber} of 13`}
-          </div>
-
-          {/* Always a 2x2 block, so four cards never wrap three-then-one. */}
-          <div className="hearts-trick">
-            {trick && trick.plays.length > 0 ? (
-              trick.plays.map((play) => (
-                <div
-                  key={`${play.seatId}-${cardCode(play.card)}`}
-                  className={
-                    'hearts-trick-play' +
-                    (trick.winnerSeatIndex === play.seatIndex ? ' hearts-trick-winner' : '')
-                  }
-                >
-                  <PlayingCard card={play.card} size="md" />
-                  <span className="hearts-trick-who">{state.players[play.seatIndex]?.name}</span>
-                </div>
-              ))
-            ) : (
-              <div className="hearts-trick-empty">
-                {state.phase === 'passing'
-                  ? 'Choosing cards to pass…'
-                  : state.phase === 'passRevealed'
-                    ? PASS_STEP.out[state.passDirection]
-                    : state.phase === 'passReceived'
-                      ? PASS_STEP.in[state.passDirection]
-                      : 'No cards played yet.'}
-              </div>
-            )}
-          </div>
+                : `Trick ${state.trickNumber} of 13`
+          }
+        >
+          <TrickCards
+            trick={trick}
+            nameOf={(seatIndex) => state.players[seatIndex]?.name ?? ''}
+            emptyText={
+              state.phase === 'passing'
+                ? 'Choosing cards to pass…'
+                : state.phase === 'passRevealed'
+                  ? PASS_STEP.out[state.passDirection]
+                  : state.phase === 'passReceived'
+                    ? PASS_STEP.in[state.passDirection]
+                    : 'No cards played yet.'
+            }
+          />
 
           {/* The trick result gets a full step of its own before the cards are
               swept up, so it is legible rather than a flicker. */}
           {trick?.winnerName && !trickIsLive && (
-            <div className="hearts-trick-result">
-              <span className="hearts-takes">{trick.winnerName} takes it</span>
+            <TrickResult winnerName={trick.winnerName}>
               <span className={trick.points > 0 ? 'hearts-took-points' : 'hearts-took-none'}>
                 {trick.points > 0
                   ? `+${trick.points} point${trick.points === 1 ? '' : 's'}`
                   : 'no points'}
               </span>
-            </div>
+            </TrickResult>
           )}
 
-          <div className="hearts-flags">
-            <span className={state.heartsBroken ? 'hearts-flag on' : 'hearts-flag'}>
+          <div className="trick-flags">
+            <TrickFlag on={state.heartsBroken}>
               ♥ {state.heartsBroken ? 'broken' : 'unbroken'}
-            </span>
+            </TrickFlag>
             {/* The queen not breaking hearts is the rule people get wrong, so
                 the two facts are shown side by side rather than merged. */}
-            <span className={state.queenPlayed ? 'hearts-flag on' : 'hearts-flag'}>
+            <TrickFlag on={state.queenPlayed}>
               ♠Q {state.queenPlayed ? 'played' : 'out there'}
-            </span>
+            </TrickFlag>
           </div>
 
-          {state.lastHandSummary && (
-            <div className="hearts-summary">{state.lastHandSummary}</div>
-          )}
-        </div>
-      </div>
+          {state.lastHandSummary && <div className="trick-summary">{state.lastHandSummary}</div>}
+        </TrickCentre>
+      </TrickTable>
 
       <div className="bj-stats">
         <Stat label="Hand" value={String(state.handNumber)} title="Hands dealt so far" />
@@ -176,7 +167,11 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
           tone="good"
           title="Lowest total score — at hearts, that is who is winning"
         />
-        <Stat label="Target" value={String(targetScore)} title="The match ends when anyone reaches this" />
+        <Stat
+          label="Target"
+          value={String(targetScore)}
+          title="The match ends when anyone reaches this"
+        />
         <Stat
           label="Tricks"
           value={`${state.trickNumber} / 13`}
@@ -184,11 +179,7 @@ export function HeartsView({ state, thinking, targetScore }: Props): React.JSX.E
         />
         <Stat
           label="Free plays"
-          value={
-            state.totalPlays > 0
-              ? `${state.forcedPlays} / ${state.totalPlays}`
-              : '—'
-          }
+          value={state.totalPlays > 0 ? `${state.forcedPlays} / ${state.totalPlays}` : '—'}
           title="Plays where only one card was legal, so no model was asked and nothing was charged"
         />
       </div>
@@ -201,14 +192,6 @@ function leaderText(seats: HeartsPlayer[], best: number, handsPlayed: number): s
   const leaders = seats.filter((p) => p.totalScore === best)
   return leaders.length === 1 ? `${leaders[0].name} ${best}` : `tied on ${best}`
 }
-
-type Compass = 'south' | 'west' | 'north' | 'east'
-
-/**
- * Seat 0 sits south and play passes to the left, so the seats run
- * south → west → north → east round the table.
- */
-const COMPASS: Compass[] = ['south', 'west', 'north', 'east']
 
 function SeatBox({
   seat,
@@ -227,25 +210,13 @@ function SeatBox({
   isLeader: boolean
   phase: HeartsState['phase']
 }): React.JSX.Element {
-  const classes = ['hearts-seat', `hearts-seat-${position}`]
-  if (acting || thinking) classes.push('hearts-seat-acting')
-  if (isLeader) classes.push('hearts-seat-leader')
-  // East and west have no width to spare on a felt this narrow, so their hands
-  // fan downwards instead of across.
-  const vertical = position === 'east' || position === 'west'
-
   return (
-    <div className={classes.join(' ')}>
-      <div className="hearts-plate">
-        <span className={`seat-name${thinking ? ' seat-thinking' : ''}`}>
-          {/* The name needs its own element: text-overflow does not apply to a
-              flex container, so putting it directly here clips long names
-              mid-character instead of ellipsising them. */}
-          <span className="seat-name-text">{seat.name}</span>
-          {thinking && <span className="dots"><i /><i /><i /></span>}
-        </span>
-        <div className="hearts-scores">
-          <span className="hearts-total" title="Total score — lowest wins">
+    <TrickSeat position={position} acting={acting || thinking} leader={isLeader}>
+      <SeatPlate name={seat.name} modelId={seat.modelId} thinking={thinking}>
+        <div className="trick-scores">
+          {/* `score-lead` is the shared "this seat is winning" colour, put on
+              whichever number the game actually reads. Lowest wins here. */}
+          <span className="hearts-total score-lead" title="Total score — lowest wins">
             {seat.totalScore}
           </span>
           {seat.handScore > 0 && (
@@ -259,98 +230,27 @@ function SeatBox({
             </span>
           )}
         </div>
-        <div className="hearts-plate-meta">
-          {leading && <span className="hearts-lead-chip">leads</span>}
-          <span className="hearts-tricks">{seat.tricksWon} tricks</span>
+        <div className="trick-plate-meta">
+          {leading && <span className="trick-lead-chip">leads</span>}
+          <span className="trick-tricks">{seat.tricksWon} tricks</span>
         </div>
-        <div className="seat-model">{seat.modelId}</div>
-      </div>
+      </SeatPlate>
 
-      <div className="hearts-hand">
-        {seat.hand.length === 0 ? (
-          <div className="hearts-empty-hand">
-            {phase === 'idle' ? 'waiting' : 'out of cards'}
-          </div>
-        ) : (
-          // The spectator sees every hand, exactly as at poker. The models never
-          // do: their prompts render only their own.
-          <Fan
-            cards={seat.hand}
-            vertical={vertical}
-            position={position}
-            // Both steps lean their three cards towards the middle of the
-            // table; the ring colour is what tells them apart, gold on the way
-            // out and green on arrival.
-            marked={
-              phase === 'passRevealed'
-                ? seat.passedCards
-                : phase === 'passReceived'
-                  ? seat.receivedCards
-                  : []
-            }
-            marking={phase === 'passRevealed' ? 'out' : 'in'}
-          />
-        )}
-      </div>
-    </div>
-  )
-}
-
-/**
- * Thirteen cards will not fit side by side on a felt this narrow, so they
- * overlap. Width is the layout risk in this game, not seat count — which is why
- * the east and west hands fan downwards instead.
- */
-function Fan({
-  cards,
-  vertical,
-  position,
-  marked = [],
-  marking = 'out'
-}: {
-  cards: Card[]
-  vertical: boolean
-  position: Compass
-  /** Cards to single out — the three leaving, or the three that just arrived. */
-  marked?: Card[]
-  marking?: 'out' | 'in'
-}): React.JSX.Element {
-  const isMarked = (card: Card): boolean =>
-    marked.some((c) => c.rank === card.rank && c.suit === card.suit)
-
-  return (
-    <div className={vertical ? 'card-fan card-fan-down' : 'card-fan'}>
-      {cards.map((card) => (
-        <span
-          key={cardCode(card)}
-          className={
-            isMarked(card)
-              ? `card-slot card-pass-${marking} card-pass-${position}`
-              : 'card-slot'
-          }
-        >
-          <PlayingCard card={card} size="sm" />
-        </span>
-      ))}
-    </div>
-  )
-}
-
-function Stat({
-  label,
-  value,
-  tone,
-  title
-}: {
-  label: string
-  value: string
-  tone?: 'good' | 'bad'
-  title?: string
-}): React.JSX.Element {
-  return (
-    <div className="stat" title={title}>
-      <div className="stat-label">{label}</div>
-      <div className={`stat-value${tone ? ` stat-${tone}` : ''}`}>{value}</div>
-    </div>
+      <SeatHand
+        cards={seat.hand}
+        position={position}
+        emptyText={phase === 'idle' ? 'waiting' : 'out of cards'}
+        // Both steps lean their three cards towards the middle of the table;
+        // the ring colour is what tells them apart, gold out and green in.
+        marked={
+          phase === 'passRevealed'
+            ? seat.passedCards
+            : phase === 'passReceived'
+              ? seat.receivedCards
+              : []
+        }
+        marking={phase === 'passRevealed' ? 'out' : 'in'}
+      />
+    </TrickSeat>
   )
 }

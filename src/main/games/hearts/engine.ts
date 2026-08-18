@@ -1,4 +1,12 @@
-import { cardCode, freshDeck, shuffle, type Card, type Suit } from '../../../shared/cards.ts'
+import { cardCode, sameCard, type Card } from '../../../shared/cards.ts'
+import {
+  dealHands,
+  followSuit,
+  leadableCards,
+  removeCard,
+  sortHand,
+  trickWinner
+} from '../tricks/core.ts'
 import { GAMES } from '../../../shared/types.ts'
 import type {
   HeartsPlayer,
@@ -33,9 +41,12 @@ export function cardPoints(card: Card): number {
   return 0
 }
 
-export function sameCard(a: Card, b: Card): boolean {
-  return a.rank === b.rank && a.suit === b.suit
-}
+/**
+ * Re-exported so the Hearts-specific callers that ask the engine about cards
+ * keep asking the engine. The definition itself is a card primitive, not a
+ * Hearts rule, so it lives with the other card primitives.
+ */
+export { sameCard, sortHand }
 
 /** All 26 penalty points in a deck: thirteen hearts plus the queen. */
 export const POINTS_PER_HAND = 26
@@ -132,9 +143,9 @@ export class HeartsTable {
     // Left, right, across, hold, repeating from the first hand.
     s.passDirection = PASS_CYCLE[(s.handNumber - 1) % PASS_CYCLE.length]
 
-    const deck = shuffle(freshDeck())
+    const hands = dealHands(HEARTS_SEATS, CARDS_PER_HAND)
     s.players.forEach((player, index) => {
-      player.hand = sortHand(deck.slice(index * CARDS_PER_HAND, (index + 1) * CARDS_PER_HAND))
+      player.hand = hands[index]
       player.handScore = 0
       player.passedCards = []
       player.receivedCards = []
@@ -313,18 +324,15 @@ export class HeartsTable {
       if (firstTrick) return player.hand.filter((c) => sameCard(c, TWO_OF_CLUBS))
 
       // Hearts may not be led until one has actually been played. A seat left
-      // holding nothing else may lead them anyway.
-      if (!s.heartsBroken) {
-        const nonHearts = player.hand.filter((c) => c.suit !== 'h')
-        if (nonHearts.length > 0) return nonHearts
-      }
-      return [...player.hand]
+      // holding nothing else may lead them anyway — the same shape as spades
+      // at Spades, which is why the rule lives in the shared module.
+      return leadableCards(player.hand, 'h', s.heartsBroken)
     }
 
     // Following: the led suit if it is held at all. No first-trick filter is
     // needed here — trick one is always led with the two of clubs, and no club
     // carries points, so following suit cannot put any in.
-    const followers = player.hand.filter((c) => c.suit === trick.leadSuit)
+    const followers = followSuit(player.hand, trick.leadSuit)
     if (followers.length > 0) return followers
 
     // Void in the led suit, so anything goes — except that no points fall on
@@ -355,7 +363,7 @@ export class HeartsTable {
     const trick = s.currentTrick
     if (!trick) throw new Error('no trick is open')
 
-    player.hand = player.hand.filter((held) => !sameCard(held, card))
+    player.hand = removeCard(player.hand, card)
     if (trick.plays.length === 0) trick.leadSuit = card.suit
     trick.plays.push({ seatIndex, seatId: player.id, card })
     trick.points += cardPoints(card)
@@ -390,10 +398,8 @@ export class HeartsTable {
     const trick = s.currentTrick
     if (!trick || trick.plays.length !== HEARTS_SEATS) throw new Error('the trick is not complete')
 
-    let best = trick.plays[0]
-    for (const play of trick.plays) {
-      if (play.card.suit === trick.leadSuit && play.card.rank > best.card.rank) best = play
-    }
+    // No trump at Hearts, so the highest card of the led suit takes it.
+    const best = trickWinner(trick.plays, trick.leadSuit)
     trick.winnerSeatIndex = best.seatIndex
     const winner = s.players[best.seatIndex]
     trick.winnerName = winner.name
@@ -470,10 +476,4 @@ export class HeartsTable {
   get cardsInHands(): Card[] {
     return this.state.players.flatMap((p) => p.hand)
   }
-}
-
-/** By suit then rank, so a rendered hand and a prompt read the same way. */
-export function sortHand(cards: Card[]): Card[] {
-  const order: Record<Suit, number> = { c: 0, d: 1, s: 2, h: 3 }
-  return [...cards].sort((a, b) => order[a.suit] - order[b.suit] || a.rank - b.rank)
 }

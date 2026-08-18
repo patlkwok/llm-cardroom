@@ -27,6 +27,11 @@ export function suitSymbol(suit: Suit): string {
   return SUIT_LABEL[suit]
 }
 
+/** Value equality. Cards are plain data, so identity is never the question. */
+export function sameCard(a: Card, b: Card): boolean {
+  return a.rank === b.rank && a.suit === b.suit
+}
+
 export function isRed(card: Card): boolean {
   return card.suit === 'd' || card.suit === 'h'
 }

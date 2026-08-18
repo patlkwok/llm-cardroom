@@ -284,25 +284,36 @@ export interface PokerRules {
   blindIncreaseEvery: number
 }
 
-/* ----------------------------------------------------------------- hearts */
+/* --------------------------------------------------- trick-taking, shared */
 
-/** Where this hand's three cards go. Rotates, and every fourth hand is a hold. */
-export type PassDirection = 'left' | 'right' | 'across' | 'hold'
-
-export interface HeartsPlay {
+/**
+ * One card going down. Shared by every trick-taking game here: the shape was
+ * identical in each, and `trickWinner` in `tricks/core.ts` is written against
+ * it rather than against any one game's version.
+ */
+export interface TrickPlay {
   seatIndex: number
   seatId: string
   card: Card
 }
 
-export interface HeartsTrick {
+/** What every trick has, before a game adds its own scoring to it. */
+export interface TrickBase {
   /** 1-based, so it reads the same in the log and the prompt. */
   number: number
   leadSuit: Suit
-  plays: HeartsPlay[]
+  plays: TrickPlay[]
   /** Set once four cards are down. */
   winnerSeatIndex?: number
   winnerName?: string
+}
+
+/* ----------------------------------------------------------------- hearts */
+
+/** Where this hand's three cards go. Rotates, and every fourth hand is a hold. */
+export type PassDirection = 'left' | 'right' | 'across' | 'hold'
+
+export interface HeartsTrick extends TrickBase {
   /** Penalty points carried by the four cards. */
   points: number
 }
