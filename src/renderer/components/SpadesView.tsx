@@ -37,6 +37,7 @@ export function emptySpadesState(settings: MatchSettings): SpadesState {
     teamIndex: index % 2,
     hand: [],
     bid: null,
+    blindNil: false,
     tricksWon: 0,
     lastHandTricks: 0,
     nilsBid: 0,
@@ -75,7 +76,8 @@ export function SpadesView({ state, thinking, rules }: Props): React.JSX.Element
   const seats = state.players
   const trick = state.currentTrick ?? state.lastTrick
   const trickIsLive = state.currentTrick !== null
-  const bidding = state.phase === 'bidding'
+  const bidding = state.phase === 'bidding' || state.phase === 'blindBidding'
+  const blindBidding = state.phase === 'blindBidding'
   // Highest total wins here, the ordinary way round — Hearts is the odd one out.
   const best = state.teams.length ? Math.max(...state.teams.map((t) => t.score)) : 0
   const leadingTeams = state.teams.filter((t) => t.score === best).map((t) => t.index)
@@ -108,14 +110,20 @@ export function SpadesView({ state, thinking, rules }: Props): React.JSX.Element
             state.phase === 'idle'
               ? 'Waiting to start'
               : bidding
-                ? `Hand ${state.handNumber} · bidding`
+                ? `Hand ${state.handNumber} · ${blindBidding ? 'blind nil offer' : 'bidding'}`
                 : `Trick ${state.trickNumber} of 13`
           }
         >
           <TrickCards
             trick={trick}
             nameOf={(seatIndex) => state.players[seatIndex]?.name ?? ''}
-            emptyText={bidding ? 'Bidding…' : 'No cards played yet.'}
+            emptyText={
+              blindBidding
+                ? 'Blind nil offered — nobody has seen their cards…'
+                : bidding
+                  ? 'Bidding…'
+                  : 'No cards played yet.'
+            }
           />
 
           {/* The trick result gets a step of its own before the cards are swept
@@ -265,10 +273,21 @@ function SeatBox({
               </span>
             ) : isNil ? (
               <span
-                className={nilBroken ? 'sp-bid sp-nil-broken' : 'sp-bid sp-nil'}
-                title={nilBroken ? 'Nil bid, and already broken — −100' : 'Nil bid: no tricks at all, for +100'}
+                className={
+                  (nilBroken ? 'sp-bid sp-nil-broken' : 'sp-bid sp-nil') +
+                  (seat.blindNil ? ' sp-blind' : '')
+                }
+                title={
+                  seat.blindNil
+                    ? nilBroken
+                      ? 'Blind nil — declared unseen, and already broken: −200'
+                      : 'Blind nil: declared before seeing a card, for +200'
+                    : nilBroken
+                      ? 'Nil bid, and already broken — −100'
+                      : 'Nil bid: no tricks at all, for +100'
+                }
               >
-                {nilBroken ? 'NIL ✕' : 'NIL'}
+                {seat.blindNil ? (nilBroken ? 'BLIND ✕' : 'BLIND NIL') : nilBroken ? 'NIL ✕' : 'NIL'}
               </span>
             ) : (
               <span className="sp-bid" title="Tricks bid">

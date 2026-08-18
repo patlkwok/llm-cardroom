@@ -306,7 +306,16 @@ rather than two.** Bringing it home doubles the pair's nil bonuses, for +400;
 if either of them takes a trick there is no nil penalty at all — but the
 contract is then 0, so every trick the two of them took is a bag. Scoring it as
 two independent nils would give +200 and −200, which is wrong in both
-directions. Blind nil is not offered.
+directions.
+
+**Blind nil is an option, off by default.** With it on, a partnership at least
+100 points behind is offered a nil declared *before its seats have seen a
+card* — worth ±200 rather than ±100, and a **double blind nil** where both
+partners take one is +800 if they both bring it home. Nobody qualifies in the
+first hand, since the scores start level. The offer is a prompt with no cards in
+it at all, which is the whole of what makes it blind, and a model that fails to
+answer always declines: committing one to a ±200 swing because it went quiet
+would be the worst default in the app.
 
 Spades is genuinely less standardised than Hearts — how a nil bidder's tricks
 are counted, whether a set partnership keeps its bags, and what ten bags costs
@@ -347,7 +356,7 @@ match sorts the board into final standings.
 npm test
 ```
 
-257 tests. The load-bearing ones are invariants rather than examples: chip
+267 tests. The load-bearing ones are invariants rather than examples: chip
 conservation across randomised poker hands and repeated roster churn, per-seat
 bankroll accounting at blackjack, card conservation on the shoe, 52 cards and
 exactly 26 points conserved through every hearts hand, all thirteen tricks

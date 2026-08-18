@@ -1,6 +1,11 @@
 import { cardCode, sameCard, type Card } from '../../../shared/cards.ts'
 import type { SpadesPlayer, SpadesRules, SpadesState, SpadesTrick } from '../../../shared/types.ts'
-import { BAGS_PER_PENALTY, TRICKS_PER_HAND, TRUMP } from '../spades/engine.ts'
+import {
+  BAGS_PER_PENALTY,
+  BLIND_NIL_VALUE,
+  TRICKS_PER_HAND,
+  TRUMP
+} from '../spades/engine.ts'
 import {
   extractJson,
   NOTATION,
@@ -67,7 +72,13 @@ export function spadesSystemPrompt(rules: SpadesRules): string {
     '  of you takes a trick there is no nil penalty at all, but your contract is then 0,',
     '  so every trick the two of you took is a bag.',
     '- If your hand is weak but you cannot honestly promise zero tricks, bid 1, not 0.',
-    '- Blind nil is not offered at this table.',
+    rules.blindNil
+      ? '- **BLIND NIL** is offered to a partnership at least 100 points behind: a nil\n' +
+        `  declared before you have seen a single card, worth ±${BLIND_NIL_VALUE} rather than\n` +
+        '  ±100. Both partners declaring one is a DOUBLE BLIND NIL, worth +800 if they\n' +
+        '  both bring it home and no penalty if either fails. You are offered it\n' +
+        '  explicitly when you qualify; you never have to ask for it.'
+      : '- Blind nil is not offered at this table.',
     '',
     `- The match ends when a partnership reaches ${rules.targetScore} points.` +
       (rules.bustScore < 0 ? ` A partnership that falls to ${rules.bustScore} loses at once.` : ''),
@@ -113,6 +124,89 @@ function scoreBlock(state: SpadesState, player: SpadesPlayer): string[] {
     )
   }
   return lines
+}
+
+/**
+ * The blind-nil offer.
+ *
+ * **This prompt must never contain a card.** That is the whole of what makes it
+ * blind — the seat is committing before it has seen anything, on the score
+ * situation alone — and a leak here would silently turn the most distinctive
+ * decision in the game into an ordinary nil bid. A test asserts no card code
+ * appears anywhere in it.
+ */
+export function buildSpadesBlindNilPrompt(
+  state: SpadesState,
+  player: SpadesPlayer,
+  deficit: number,
+  rules: SpadesRules
+): Prompt {
+  const partner = state.players[(player.seatIndex + 2) % state.players.length]
+  const lines: string[] = []
+
+  lines.push(`Hand ${state.handNumber}. Blind nil offer — you have NOT seen your cards.`)
+  lines.push('')
+  lines.push(
+    `Your partnership is ${deficit} points behind, which is why you are being offered this.`
+  )
+  lines.push(
+    'If you decline you will be dealt in normally and bid in the ordinary round, ' +
+      'with your hand in front of you.'
+  )
+  lines.push('')
+  lines.push(
+    `A BLIND NIL is a promise to take no tricks at all, made sight unseen. It is worth ` +
+      `+${BLIND_NIL_VALUE} to your partnership if you bring it home and −${BLIND_NIL_VALUE} if ` +
+      'you take even one trick.'
+  )
+
+  if (partner.blindNil) {
+    lines.push('')
+    lines.push(
+      `**${partner.name} has already declared a blind nil.** Declaring one yourself makes it a ` +
+        'DOUBLE BLIND NIL: +800 if you both take nothing, and no penalty at all if either of ' +
+        'you slips — though your contract would then be 0, so every trick the two of you take ' +
+        'is a bag.'
+    )
+  } else if (partner.bid === null) {
+    lines.push('')
+    lines.push(
+      `Your partner ${partner.name} has not bid yet and will see their own hand before they do. ` +
+        'If you take this, the whole contract rests on them and they will play to cover you.'
+    )
+  }
+
+  lines.push(...scoreBlock(state, player))
+  lines.push('')
+  lines.push('You know nothing about your hand. This is a judgement about the score, not the cards.')
+  lines.push('Declining is entirely respectable and is the right answer most of the time.')
+  lines.push('')
+  lines.push('Do you bid blind nil?')
+  lines.push('')
+  lines.push('Reply with a single JSON object and nothing else:')
+  lines.push('{"reasoning": "<one short sentence>", "blind": true or false}')
+
+  return { system: spadesSystemPrompt(rules), user: lines.join('\n') }
+}
+
+/** Reads a yes/no. Anything unrecognised is a rejection, not a silent decline. */
+export function parseSpadesBlindNilReply(text: string): ParseOutcome<boolean> {
+  const obj = extractJson(text)
+  if (!obj) return notJson()
+  const reasoning = readReasoning(obj)
+
+  const raw = obj.blind ?? obj.blindNil ?? obj.declare ?? obj.answer ?? obj.bid
+  if (typeof raw === 'boolean') return { ok: true, value: raw, reasoning }
+  if (typeof raw === 'string') {
+    const clean = raw.trim().toLowerCase()
+    if (/^(true|yes|y|blind nil|blind|nil)$/.test(clean)) return { ok: true, value: true, reasoning }
+    if (/^(false|no|n|decline|pass)$/.test(clean)) return { ok: true, value: false, reasoning }
+  }
+  return {
+    ok: false,
+    reasoning,
+    problem: 'Your JSON needs a "blind" boolean: true to bid blind nil, false to decline.'
+  }
 }
 
 export function buildSpadesBidPrompt(

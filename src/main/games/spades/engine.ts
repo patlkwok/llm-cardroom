@@ -32,6 +32,13 @@ export const NIL_VALUE = 100
  * than as two independent nils — see `scoreTeam`.
  */
 export const DOUBLE_NIL_VALUE = 400
+/** A nil declared before the seat saw a card is worth double an ordinary one. */
+export const BLIND_NIL_VALUE = 200
+/**
+ * How far behind a partnership must be before it may bid blind. At 0-0 nobody
+ * qualifies, so a blind nil can never happen in the first hand.
+ */
+export const BLIND_NIL_DEFICIT = 100
 
 export interface SpadesSeed {
   id: string
@@ -72,6 +79,8 @@ export interface SpadesSeed {
  */
 export class SpadesTable {
   readonly state: SpadesState
+  /** Seats still owed a blind-nil offer this hand, in bidding order. */
+  private blindQueue: number[] = []
 
   constructor(seeds: SpadesSeed[], private readonly rules: SpadesRules) {
     if (seeds.length !== SPADES_SEATS) {
@@ -85,6 +94,7 @@ export class SpadesTable {
       teamIndex: index % 2,
       hand: [],
       bid: null,
+      blindNil: false,
       tricksWon: 0,
       lastHandTricks: 0,
       nilsBid: 0,
@@ -192,6 +202,7 @@ export class SpadesTable {
     s.players.forEach((player, index) => {
       player.hand = hands[index]
       player.bid = null
+      player.blindNil = false
       player.tricksWon = 0
     })
     for (const team of s.teams) {
@@ -200,11 +211,96 @@ export class SpadesTable {
       team.lastHandDelta = 0
     }
 
-    // Bidding opens to the dealer's left and runs round the table, so every
-    // seat but the first bids knowing something about its partner.
-    s.phase = 'bidding'
-    s.biddingSeatIndex = this.leftOfDealer()
     s.leadSeatIndex = this.leftOfDealer()
+
+    // A blind nil has to be declared before the seat has seen anything, so it
+    // gets a round of its own ahead of the ordinary bidding. Skipped outright
+    // when the rule is off or nobody is far enough behind — which includes
+    // every first hand, since the scores start level.
+    this.blindQueue = this.rules.blindNil ? this.seatsEligibleForBlindNil() : []
+    if (this.blindQueue.length > 0) {
+      s.phase = 'blindBidding'
+      s.biddingSeatIndex = this.blindQueue[0]
+    } else {
+      // Bidding opens to the dealer's left and runs round the table, so every
+      // seat but the first bids knowing something about its partner.
+      s.phase = 'bidding'
+      s.biddingSeatIndex = this.leftOfDealer()
+    }
+  }
+
+  /**
+   * Seats whose partnership is far enough behind to bid blind, in bidding
+   * order. Eligibility is a partnership property, so both partners get the
+   * offer or neither does.
+   */
+  private seatsEligibleForBlindNil(): number[] {
+    const s = this.state
+    const order: number[] = []
+    for (let i = 0; i < SPADES_SEATS; i++) {
+      const seatIndex = (this.leftOfDealer() + i) % SPADES_SEATS
+      if (this.blindNilDeficit(seatIndex) >= BLIND_NIL_DEFICIT) order.push(seatIndex)
+    }
+    return order
+  }
+
+  /** How far this seat's partnership is behind the other one; negative if ahead. */
+  blindNilDeficit(seatIndex: number): number {
+    const mine = this.teamOf(seatIndex)
+    const theirs = this.state.teams.find((t) => t.index !== mine.index)
+    return (theirs?.score ?? 0) - mine.score
+  }
+
+  get blindBidding(): boolean {
+    return this.state.phase === 'blindBidding'
+  }
+
+  /** The seat owed a blind-nil offer, or undefined once all have answered. */
+  get pendingBlindSeat(): SpadesPlayer | undefined {
+    const index = this.blindQueue[0]
+    return index === undefined ? undefined : this.state.players[index]
+  }
+
+  /**
+   * Answers the blind offer for one seat. Declaring commits it to a nil worth
+   * double, taken **without having seen a card**; declining simply drops it
+   * into the ordinary bidding round with everybody else.
+   */
+  setBlindNil(seatIndex: number, declare: boolean): void {
+    const s = this.state
+    if (s.phase !== 'blindBidding') throw new Error('no blind bidding is in progress')
+    if (this.blindQueue[0] !== seatIndex) {
+      throw new Error(`seat ${seatIndex} cannot answer the blind offer out of turn`)
+    }
+    if (declare) {
+      const player = s.players[seatIndex]
+      player.bid = 0
+      player.blindNil = true
+      player.nilsBid++
+    }
+
+    this.blindQueue.shift()
+    if (this.blindQueue.length > 0) {
+      s.biddingSeatIndex = this.blindQueue[0]
+      return
+    }
+
+    // Everyone eligible has answered. Ordinary bidding starts from the dealer's
+    // left, skipping anyone already committed to a blind nil.
+    s.phase = 'bidding'
+    const next = this.nextUnbidSeat(this.leftOfDealer())
+    if (next === -1) this.closeBidding()
+    else s.biddingSeatIndex = next
+  }
+
+  /** The first seat from `from` onwards that still owes a bid, or -1. */
+  private nextUnbidSeat(from: number): number {
+    const s = this.state
+    for (let i = 0; i < SPADES_SEATS; i++) {
+      const seatIndex = (from + i) % SPADES_SEATS
+      if (s.players[seatIndex].bid === null) return seatIndex
+    }
+    return -1
   }
 
   private leftOfDealer(): number {
@@ -252,14 +348,22 @@ export class SpadesTable {
     player.bid = bid
     if (bid === 0) player.nilsBid++
 
-    const next = (seatIndex + 1) % SPADES_SEATS
-    if (s.players[next].bid === null) {
+    // Step over anyone already committed to a blind nil rather than assuming
+    // the next seat round is the next bidder: a blind nil sets `bid` early, and
+    // treating that as "everybody has bid" would end the round two seats short.
+    const next = this.nextUnbidSeat((seatIndex + 1) % SPADES_SEATS)
+    if (next !== -1) {
       s.biddingSeatIndex = next
       return
     }
+    this.closeBidding()
+  }
 
-    // Everyone has bid. A nil adds nothing to the contract — it is scored on
-    // its own, and its partner's bid has to stand up unaided.
+  /** Fixes the contracts and leads the first trick. */
+  private closeBidding(): void {
+    const s = this.state
+    // A nil adds nothing to the contract — it is scored on its own, and its
+    // partner's bid has to stand up unaided.
     s.biddingSeatIndex = -1
     for (const team of s.teams) {
       team.contract = team.seatIndices.reduce((sum, i) => sum + (s.players[i].bid ?? 0), 0)
@@ -423,7 +527,12 @@ export class SpadesTable {
       const nils = team.seatIndices
         .map((i) => s.players[i])
         .filter((p) => p.bid === 0)
-        .map((p) => ({ name: p.name, seatIndex: p.seatIndex, made: p.tricksWon === 0 }))
+        .map((p) => ({
+          name: p.name,
+          seatIndex: p.seatIndex,
+          made: p.tricksWon === 0,
+          blind: p.blindNil
+        }))
 
       const result = scoreTeam({
         contract: team.contract,
@@ -435,6 +544,8 @@ export class SpadesTable {
         bagsBefore: team.bags,
         nilsMade: nils.filter((n) => n.made).length,
         nilsFailed: nils.filter((n) => !n.made).length,
+        // What each nil is worth on its own — 100, or 200 for a blind one.
+        nilBonuses: nils.map((n) => (n.blind ? BLIND_NIL_VALUE : NIL_VALUE)),
         nilTricksCountToContract: this.rules.nilTricksCountToContract
       })
 
@@ -476,6 +587,11 @@ export interface SpadesTeamScoreInput {
   nilsMade: number
   nilsFailed: number
   /**
+   * What each nil at this partnership is worth on its own: 100 ordinarily, 200
+   * for one declared blind. Length must equal `nilsMade + nilsFailed`.
+   */
+  nilBonuses: number[]
+  /**
    * Whether `nilTricks` count towards the contract. See `SpadesRules`; false is
    * the house rule where a nil bidder's tricks become bags only.
    */
@@ -499,7 +615,7 @@ export interface SpadesTeamScore {
 
 export interface SpadesHandScore extends SpadesTeamScore {
   team: SpadesTeam
-  nils: Array<{ name: string; seatIndex: number; made: boolean }>
+  nils: Array<{ name: string; seatIndex: number; made: boolean; blind: boolean }>
 }
 
 /**
@@ -517,8 +633,12 @@ export function scoreTeam(input: SpadesTeamScoreInput): SpadesTeamScore {
     bagsBefore,
     nilsMade,
     nilsFailed,
+    nilBonuses,
     nilTricksCountToContract
   } = input
+  if (nilBonuses.length !== nilsMade + nilsFailed) {
+    throw new Error('nilBonuses must carry one value per nil bid')
+  }
 
   // Under the house rule a nil bidder's tricks are worth nothing to the
   // contract — the partner's bid has to be made unaided — but they are still
@@ -542,13 +662,27 @@ export function scoreTeam(input: SpadesTeamScoreInput): SpadesTeamScore {
   // +100/−100 each, and in particular a mixed result is 0 by rule rather than
   // by two halves cancelling. The failed case is not free even so: the
   // contract is 0, so every trick the pair took is a bag.
-  const nils = nilsMade + nilsFailed
+  // One rule covers all four rows of the published table rather than four
+  // special cases. A lone nil is worth its own bonus either way; **both
+  // partners on nil is scored as a unit** — "double the combined bonus" if they
+  // both bring it home, and no penalty at all if either fails.
+  //
+  //   two ordinary   2 x (100 + 100) = 400
+  //   two blind      2 x (200 + 200) = 800
+  //   one of each    2 x (100 + 200) = 600
+  //
+  // The mixed pair is not in the table at all; falling out of the general rule
+  // rather than needing a fifth row is the reason to write it this way.
+  const nilCount = nilsMade + nilsFailed
+  const combined = nilBonuses.reduce((sum, bonus) => sum + bonus, 0)
   const nilPoints =
-    nils === SPADES_SEATS / 2
+    nilCount === SPADES_SEATS / 2
       ? nilsFailed === 0
-        ? DOUBLE_NIL_VALUE
+        ? combined * 2
         : 0
-      : (nilsMade - nilsFailed) * NIL_VALUE
+      : nilsMade > 0
+        ? combined
+        : -combined
 
   return {
     contractPoints,
@@ -557,7 +691,7 @@ export function scoreTeam(input: SpadesTeamScoreInput): SpadesTeamScore {
     nilPoints,
     bagsAfter,
     made,
-    doubleNil: nils === SPADES_SEATS / 2,
+    doubleNil: nilCount === SPADES_SEATS / 2,
     delta: contractPoints + bagsGained + bagPenalty + nilPoints
   }
 }

@@ -442,6 +442,11 @@ export interface SpadesPlayer {
   hand: Card[]
   /** Tricks this seat contracted for, or null before it has bid. 0 is nil. */
   bid: number | null
+  /**
+   * This seat's nil was declared **blind** — before it had seen a single card —
+   * so it is worth double. Only meaningful when `bid` is 0.
+   */
+  blindNil: boolean
   /** Tricks taken this hand, and in the hand just scored. */
   tricksWon: number
   lastHandTricks: number
@@ -471,7 +476,14 @@ export interface SpadesTeam {
 
 export interface SpadesState {
   kind: 'spades'
-  phase: 'idle' | 'bidding' | 'playing' | 'handComplete' | 'complete'
+  /**
+   * `blindBidding` is a round of its own before the ordinary one: every seat
+   * eligible for a blind nil is asked whether it wants one **without being
+   * shown its hand**. Seats that decline bid normally afterwards, having seen
+   * their cards. It is skipped entirely when the rule is off or nobody
+   * qualifies.
+   */
+  phase: 'idle' | 'blindBidding' | 'bidding' | 'playing' | 'handComplete' | 'complete'
   handNumber: number
   handsPlayed: number
   players: SpadesPlayer[]
@@ -479,7 +491,7 @@ export interface SpadesState {
   teams: SpadesTeam[]
   /** Rotates one seat left each hand; the seat to its left leads trick one. */
   dealerIndex: number
-  /** Seat owed a bid, or -1 once every seat has bid. */
+  /** Seat owed a bid, or -1 once every seat has bid. Serves both bid rounds. */
   biddingSeatIndex: number
   currentTrick: SpadesTrick | null
   /** Kept on the felt after it is gathered, so the operator can read it. */
@@ -518,6 +530,15 @@ export interface SpadesRules {
    * force is stated in the system prompt so no model has to guess.
    */
   nilTricksCountToContract: boolean
+  /**
+   * Offer a blind nil — a nil declared **before the seat sees its cards** — to
+   * a partnership that is far enough behind. Worth double an ordinary nil, and
+   * both partners declaring one is a double blind nil.
+   *
+   * Off by default: it is a real swing, it only ever applies to a losing side,
+   * and the table plays perfectly well without it.
+   */
+  blindNil: boolean
 }
 
 /* ------------------------------------------------------------ 24 puzzle */
@@ -759,7 +780,8 @@ export const DEFAULT_HEARTS_RULES: HeartsRules = {
 export const DEFAULT_SPADES_RULES: SpadesRules = {
   targetScore: 500,
   bustScore: -200,
-  nilTricksCountToContract: true
+  nilTricksCountToContract: true,
+  blindNil: false
 }
 
 export const DEFAULT_TWENTYFOUR_RULES: TwentyFourRules = {

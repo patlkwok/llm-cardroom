@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { cardCode, sameCard, type Card } from '../src/shared/cards.ts'
 import {
   BAGS_PER_PENALTY,
+  BLIND_NIL_DEFICIT,
+  BLIND_NIL_VALUE,
   CARDS_PER_HAND,
   DOUBLE_NIL_VALUE,
   NIL_VALUE,
@@ -365,14 +367,14 @@ test('scoring a hand matches an independently written table of cases', () => {
   // Written from the rules as stated in the system prompt, not read back out of
   // the code. Every entry names its arithmetic so a wrong expectation is
   // visible rather than authoritative-looking.
-  const base = { nilTricks: 0, nilTricksCountToContract: true }
+  const base = { nilTricks: 0, nilTricksCountToContract: true, nilBonuses: [] as number[] }
   const cases: Array<[string, Parameters<typeof scoreTeam>[0], number]> = [
     ['made exactly', { ...base, contract: 4, tricksWon: 4, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, 40],
     ['made with two bags', { ...base, contract: 4, tricksWon: 6, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, 42],
     ['set by one', { ...base, contract: 4, tricksWon: 3, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, -40],
     ['set badly', { ...base, contract: 9, tricksWon: 2, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, -90],
-    ['nil made alongside a made contract', { ...base, contract: 3, tricksWon: 4, bagsBefore: 0, nilsMade: 1, nilsFailed: 0 }, 30 + 1 + 100],
-    ['nil failed alongside a made contract', { ...base, contract: 3, tricksWon: 5, nilTricks: 1, bagsBefore: 0, nilsMade: 0, nilsFailed: 1 }, 30 + 2 - 100],
+    ['nil made alongside a made contract', { ...base, contract: 3, tricksWon: 4, bagsBefore: 0, nilsMade: 1, nilsFailed: 0, nilBonuses: [NIL_VALUE] }, 30 + 1 + 100],
+    ['nil failed alongside a made contract', { ...base, contract: 3, tricksWon: 5, nilTricks: 1, bagsBefore: 0, nilsMade: 0, nilsFailed: 1, nilBonuses: [NIL_VALUE] }, 30 + 2 - 100],
     ['the tenth bag costs a hundred', { ...base, contract: 4, tricksWon: 6, bagsBefore: 8, nilsMade: 0, nilsFailed: 0 }, 40 + 2 - 100],
     ['a set partnership takes no bags at all', { ...base, contract: 5, tricksWon: 4, bagsBefore: 9, nilsMade: 0, nilsFailed: 0 }, -50]
   ]
@@ -394,26 +396,26 @@ test('double nil is scored as one thing, not as two independent nils', () => {
   // separate nils gives 200 and −200 instead of 400 and 0, and — the subtler
   // half — makes a mixed result come to 0 by two halves cancelling rather than
   // by rule.
-  const base = { nilTricksCountToContract: true, bagsBefore: 0 }
+  const base = { nilTricksCountToContract: true, bagsBefore: 0, nilBonuses: [] as number[] }
 
-  const bothHome = scoreTeam({ ...base, contract: 0, tricksWon: 0, nilTricks: 0, nilsMade: 2, nilsFailed: 0 })
+  const bothHome = scoreTeam({ ...base, contract: 0, tricksWon: 0, nilTricks: 0, nilsMade: 2, nilsFailed: 0, nilBonuses: [NIL_VALUE, NIL_VALUE] })
   assert.equal(bothHome.doubleNil, true)
   assert.equal(bothHome.nilPoints, DOUBLE_NIL_VALUE)
   assert.equal(bothHome.delta, 400, 'both nils home is the doubled bonus, not 100 + 100')
 
   // Either failing kills the bonus and carries no penalty — but the contract is
   // 0, so every trick the pair took is a bag. That is the whole cost.
-  const oneBroke = scoreTeam({ ...base, contract: 0, tricksWon: 3, nilTricks: 3, nilsMade: 1, nilsFailed: 1 })
+  const oneBroke = scoreTeam({ ...base, contract: 0, tricksWon: 3, nilTricks: 3, nilsMade: 1, nilsFailed: 1, nilBonuses: [NIL_VALUE, NIL_VALUE] })
   assert.equal(oneBroke.nilPoints, 0, 'no nil penalty when a double nil breaks')
   assert.equal(oneBroke.bagsGained, 3, 'but the tricks are all bags')
   assert.equal(oneBroke.delta, 3)
 
-  const bothBroke = scoreTeam({ ...base, contract: 0, tricksWon: 5, nilTricks: 5, nilsMade: 0, nilsFailed: 2 })
+  const bothBroke = scoreTeam({ ...base, contract: 0, tricksWon: 5, nilTricks: 5, nilsMade: 0, nilsFailed: 2, nilBonuses: [NIL_VALUE, NIL_VALUE] })
   assert.equal(bothBroke.nilPoints, 0, 'still no penalty when both break')
   assert.equal(bothBroke.delta, 5)
 
   // A single nil is untouched by any of this.
-  const single = scoreTeam({ ...base, contract: 4, tricksWon: 4, nilTricks: 0, nilsMade: 1, nilsFailed: 0 })
+  const single = scoreTeam({ ...base, contract: 4, tricksWon: 4, nilTricks: 0, nilsMade: 1, nilsFailed: 0, nilBonuses: [NIL_VALUE] })
   assert.equal(single.doubleNil, false)
   assert.equal(single.nilPoints, NIL_VALUE)
 })
@@ -422,7 +424,7 @@ test('the nil-tricks rule changes whether a contract is made', () => {
   // The setting, and the case that separates the two readings: the partnership
   // bid 3 and took 3, but one of those was taken by the nil bidder. Counting it
   // makes the contract; not counting it sets them.
-  const base = { contract: 3, tricksWon: 3, nilTricks: 1, bagsBefore: 0, nilsMade: 0, nilsFailed: 1 }
+  const base = { contract: 3, tricksWon: 3, nilTricks: 1, bagsBefore: 0, nilsMade: 0, nilsFailed: 1, nilBonuses: [NIL_VALUE] }
 
   const counting = scoreTeam({ ...base, nilTricksCountToContract: true })
   assert.equal(counting.made, true)
@@ -440,7 +442,7 @@ test('the nil-tricks rule changes whether a contract is made', () => {
   for (const flag of [true, false]) {
     const clean = scoreTeam({
       contract: 3, tricksWon: 4, nilTricks: 0, bagsBefore: 0,
-      nilsMade: 1, nilsFailed: 0, nilTricksCountToContract: flag
+      nilsMade: 1, nilsFailed: 0, nilBonuses: [NIL_VALUE], nilTricksCountToContract: flag
     })
     assert.equal(clean.delta, 30 + 1 + 100)
   }
@@ -487,7 +489,9 @@ test('scoring agrees with an independent implementation over the whole space', (
           for (const nilTricksCountToContract of [true, false]) {
             const got = scoreTeam({
               contract, tricksWon: tricks, nilTricks, bagsBefore,
-              nilsMade, nilsFailed, nilTricksCountToContract
+              nilsMade, nilsFailed,
+              nilBonuses: Array(nilsMade + nilsFailed).fill(NIL_VALUE),
+              nilTricksCountToContract
             })
             const want = oracle(
               contract, tricks, nilTricks, bagsBefore, nilsMade, nilsFailed, nilTricksCountToContract
@@ -540,7 +544,7 @@ test('a nil bidder’s trick breaks the nil and still counts towards the contrac
 test('a partnership score is exactly the sum of its hand deltas', () => {
   // The Spades analogue of bankroll accounting: the running total and the
   // per-hand reports cannot disagree.
-  const table = newTable({ targetScore: 100000, bustScore: 0, nilTricksCountToContract: true })
+  const table = newTable({ targetScore: 100000, bustScore: 0, nilTricksCountToContract: true, blindNil: false })
   const totals = [0, 0]
   for (let hand = 0; hand < 12; hand++) {
     table.startHand()
@@ -557,26 +561,26 @@ test('a partnership score is exactly the sum of its hand deltas', () => {
 /* -------------------------------------------------------------- the match */
 
 test('the match ends when a partnership reaches the target, or falls through the floor', () => {
-  const high = newTable({ targetScore: 200, bustScore: -200, nilTricksCountToContract: true })
+  const high = newTable({ targetScore: 200, bustScore: -200, nilTricksCountToContract: true, blindNil: false })
   assert.equal(high.isMatchOver, false)
   high.state.teams[0].score = 200
   assert.equal(high.isMatchOver, true)
   assert.equal(high.winnerName, 'North–South')
 
-  const low = newTable({ targetScore: 500, bustScore: -200, nilTricksCountToContract: true })
+  const low = newTable({ targetScore: 500, bustScore: -200, nilTricksCountToContract: true, blindNil: false })
   low.state.teams[1].score = -200
   assert.equal(low.isMatchOver, true)
   // The floor ends the match; the *other* partnership wins it, however little
   // it has scored. Reading the loser's total as the result would be the bug.
   assert.equal(low.winnerName, 'North–South')
 
-  const noFloor = newTable({ targetScore: 500, bustScore: 0, nilTricksCountToContract: true })
+  const noFloor = newTable({ targetScore: 500, bustScore: 0, nilTricksCountToContract: true, blindNil: false })
   noFloor.state.teams[1].score = -900
   assert.equal(noFloor.isMatchOver, false, 'a floor of 0 disables it')
 })
 
 test('both partnerships level past the target is not a win', () => {
-  const table = newTable({ targetScore: 200, bustScore: 0, nilTricksCountToContract: true })
+  const table = newTable({ targetScore: 200, bustScore: 0, nilTricksCountToContract: true, blindNil: false })
   table.state.teams[0].score = 210
   table.state.teams[1].score = 210
   assert.equal(table.isMatchOver, true)
@@ -609,7 +613,7 @@ test('forced plays are common enough to be worth skipping the model call for', (
   // The same measurement Hearts carries, and the same reason: it is how much of
   // a trick-taking match comes free. Hearts runs 23.7–25.0%; Spades has no
   // first-trick rule and a trump suit, so the figure is its own.
-  const table = newTable({ targetScore: 100000, bustScore: 0, nilTricksCountToContract: true })
+  const table = newTable({ targetScore: 100000, bustScore: 0, nilTricksCountToContract: true, blindNil: false })
   let forced = 0
   let total = 0
 
@@ -638,4 +642,171 @@ test('forced plays are common enough to be worth skipping the model call for', (
   // Wide bounds on purpose: this pins that the optimisation is worth having and
   // that the counter is not stuck, not the exact figure.
   assert.ok(rate > 0.05 && rate < 0.5, `forced-play rate ${rate} is outside anything plausible`)
+})
+
+/* --------------------------------------------------------------- blind nil */
+
+test('a blind nil is worth double, and a double blind nil is double that again', () => {
+  // The published table has four rows; the engine has one rule. These pin that
+  // the rule reproduces every row, and the row the table does not list.
+  const b = (n: number[]) => ({ nilBonuses: n, nilTricksCountToContract: true, bagsBefore: 0 })
+
+  const blindHome = scoreTeam({ ...b([BLIND_NIL_VALUE]), contract: 4, tricksWon: 4, nilTricks: 0, nilsMade: 1, nilsFailed: 0 })
+  assert.equal(blindHome.nilPoints, 200, 'blind nil made is 200, not 100')
+
+  const blindBroke = scoreTeam({ ...b([BLIND_NIL_VALUE]), contract: 4, tricksWon: 5, nilTricks: 1, nilsMade: 0, nilsFailed: 1 })
+  assert.equal(blindBroke.nilPoints, -200, 'and broken is −200')
+
+  // Double blind nil: 2 x (200 + 200).
+  const doubleBlind = scoreTeam({ ...b([BLIND_NIL_VALUE, BLIND_NIL_VALUE]), contract: 0, tricksWon: 0, nilTricks: 0, nilsMade: 2, nilsFailed: 0 })
+  assert.equal(doubleBlind.nilPoints, 800)
+  assert.equal(doubleBlind.delta, 800)
+
+  // Failing either half carries no penalty, exactly as an ordinary double nil.
+  const doubleBlindBroke = scoreTeam({ ...b([BLIND_NIL_VALUE, BLIND_NIL_VALUE]), contract: 0, tricksWon: 2, nilTricks: 2, nilsMade: 1, nilsFailed: 1 })
+  assert.equal(doubleBlindBroke.nilPoints, 0)
+  assert.equal(doubleBlindBroke.delta, 2, 'just the two bags')
+
+  // One blind, one not: 2 x (100 + 200). Not a row in the published table at
+  // all — it falls out of the general rule, which is the reason to write the
+  // rule rather than the four rows.
+  const mixed = scoreTeam({ ...b([NIL_VALUE, BLIND_NIL_VALUE]), contract: 0, tricksWon: 0, nilTricks: 0, nilsMade: 2, nilsFailed: 0 })
+  assert.equal(mixed.nilPoints, 600)
+
+  // And the ordinary rows still hold.
+  const plain = scoreTeam({ ...b([NIL_VALUE, NIL_VALUE]), contract: 0, tricksWon: 0, nilTricks: 0, nilsMade: 2, nilsFailed: 0 })
+  assert.equal(plain.nilPoints, 400)
+})
+
+test('scoreTeam refuses a bonus list that does not match the nils', () => {
+  // The bonuses and the counts are two descriptions of the same thing, so they
+  // can disagree. Failing loudly beats scoring a blind nil as an ordinary one.
+  assert.throws(
+    () =>
+      scoreTeam({
+        contract: 0, tricksWon: 0, nilTricks: 0, bagsBefore: 0,
+        nilsMade: 2, nilsFailed: 0, nilBonuses: [NIL_VALUE], nilTricksCountToContract: true
+      }),
+    /one value per nil bid/
+  )
+})
+
+test('blind nil is only offered to a partnership far enough behind', () => {
+  const table = newTable({ ...DEFAULT_SPADES_RULES, blindNil: true })
+
+  // Level at 0-0, so the first hand has no blind round at all.
+  table.startHand()
+  assert.equal(table.blindBidding, false, 'nobody qualifies while the scores are level')
+  assert.equal(table.state.phase, 'bidding')
+  bidAll(table)
+  playHand(table, firstLegal)
+  table.scoreHand()
+
+  // Put one partnership a long way behind and deal again.
+  table.state.teams[0].score = 0
+  table.state.teams[1].score = 300
+  table.startHand()
+  assert.equal(table.blindBidding, true)
+  assert.equal(table.state.phase, 'blindBidding')
+
+  // Only the seats of the trailing partnership are asked, and both of them are.
+  const asked: number[] = []
+  for (;;) {
+    const seat = table.pendingBlindSeat
+    if (!seat) break
+    asked.push(seat.seatIndex)
+    assert.equal(seat.teamIndex, 0, 'the leading partnership is never offered one')
+    assert.ok(table.blindNilDeficit(seat.seatIndex) >= BLIND_NIL_DEFICIT)
+    table.setBlindNil(seat.seatIndex, false)
+  }
+  assert.deepEqual(asked.sort(), [0, 2], 'both partners of the trailing side')
+  assert.equal(table.state.phase, 'bidding', 'declining drops them into ordinary bidding')
+})
+
+test('the blind round is skipped entirely when the rule is off', () => {
+  const table = newTable({ ...DEFAULT_SPADES_RULES, blindNil: false })
+  table.state.teams[0].score = -300
+  table.startHand()
+  assert.equal(table.blindBidding, false)
+  assert.equal(table.state.phase, 'bidding')
+  assert.equal(table.pendingBlindSeat, undefined)
+})
+
+test('a seat that declares blind nil is skipped by the ordinary bidding round', () => {
+  // The bug this pins is quiet and total: a blind nil sets `bid` before the
+  // ordinary round starts, so a "has the next seat bid?" check reads that as
+  // "everybody has bid" and closes the round with two seats never asked.
+  const table = newTable({ ...DEFAULT_SPADES_RULES, blindNil: true })
+  table.state.teams[0].score = 0
+  table.state.teams[1].score = 200
+  table.startHand()
+
+  const first = table.pendingBlindSeat!
+  table.setBlindNil(first.seatIndex, true)
+  assert.equal(first.blindNil, true)
+  assert.equal(first.bid, 0)
+
+  const second = table.pendingBlindSeat!
+  table.setBlindNil(second.seatIndex, false)
+
+  // Now the ordinary round: three seats owe a bid, and the blind one is not
+  // among them.
+  const bidders: number[] = []
+  for (;;) {
+    const seat = table.pendingBidSeat
+    if (!seat) break
+    bidders.push(seat.seatIndex)
+    table.setBid(seat.seatIndex, 3)
+  }
+  assert.equal(bidders.length, 3, 'every seat but the blind one is asked')
+  assert.ok(!bidders.includes(first.seatIndex))
+  assert.equal(table.state.phase, 'playing', 'and the hand actually starts')
+
+  // The blind nil contributes nothing to the contract, exactly like any nil.
+  assert.equal(table.teamOf(first.seatIndex).contract, 3)
+})
+
+test('a blind nil scores double all the way through a played hand', () => {
+  const table = newTable({ ...DEFAULT_SPADES_RULES, blindNil: true, targetScore: 100000, bustScore: 0 })
+  table.state.teams[0].score = 0
+  table.state.teams[1].score = 500
+  table.startHand()
+
+  // Seat 0 takes the blind nil; its partner declines.
+  for (;;) {
+    const seat = table.pendingBlindSeat
+    if (!seat) break
+    table.setBlindNil(seat.seatIndex, seat.seatIndex === 0)
+  }
+  assert.equal(table.state.players[0].blindNil, true)
+
+  bidAll(table, () => 3)
+  // Seat 0 always plays its lowest legal card, which is the best it can do to
+  // keep a nil alive; whether it survives is up to the deal.
+  playHand(table, (legal, t) => (t.actingPlayer?.seatIndex === 0 ? legal[0] : legal[legal.length - 1]))
+
+  const nilSeat = table.state.players[0]
+  const before = table.team(0).score
+  const [scored] = table.scoreHand()
+  assert.equal(scored.nils.length, 1)
+  assert.equal(scored.nils[0].blind, true, 'the score carries the blindness through')
+  assert.equal(scored.nilPoints, nilSeat.tricksWon === 0 ? 200 : -200, 'double either way')
+  assert.equal(table.team(0).score, before + scored.delta)
+})
+
+test('answering the blind offer out of turn is refused', () => {
+  const table = newTable({ ...DEFAULT_SPADES_RULES, blindNil: true })
+  table.state.teams[0].score = 0
+  table.state.teams[1].score = 200
+  table.startHand()
+
+  const owed = table.pendingBlindSeat!
+  const other = table.state.players.find(
+    (p) => p.teamIndex === owed.teamIndex && p.seatIndex !== owed.seatIndex
+  )!
+  assert.throws(() => table.setBlindNil(other.seatIndex, true), /out of turn/)
+  // And there is no blind offer at all once the round has closed.
+  table.setBlindNil(owed.seatIndex, false)
+  table.setBlindNil(table.pendingBlindSeat!.seatIndex, false)
+  assert.throws(() => table.setBlindNil(0, true), /no blind bidding/)
 })

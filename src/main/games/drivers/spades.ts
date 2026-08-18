@@ -3,6 +3,7 @@ import { GAMES } from '../../../shared/types.ts'
 import type { MatchSettings, SpadesState, SpadesTrick } from '../../../shared/types.ts'
 import type { DriverContext, GameDriver } from '../driver.ts'
 import {
+  BLIND_NIL_VALUE,
   NIL_VALUE,
   SpadesTable,
   SPADES_SEATS,
@@ -11,8 +12,10 @@ import {
 } from '../spades/engine.ts'
 import {
   buildSpadesBidPrompt,
+  buildSpadesBlindNilPrompt,
   buildSpadesPlayPrompt,
   parseSpadesBidReply,
+  parseSpadesBlindNilReply,
   parseSpadesPlayReply
 } from '../prompts/spades.ts'
 
@@ -95,6 +98,8 @@ export class SpadesDriver implements GameDriver {
     ctx.pushSnapshot()
     await ctx.beat()
 
+    await this.runBlindNilOffers()
+    if (ctx.isStopping) return 'ended'
     await this.runBidding()
     if (ctx.isStopping) return 'ended'
 
@@ -128,14 +133,19 @@ export class SpadesDriver implements GameDriver {
           // broken half of a double nil carries no nil penalty at all, it just
           // takes the +400 off the table. Naming a flat 100 there would be a
           // straightforwardly false number on the felt.
-          const partnerOnNil = table.partnerOf(winnerSeat.seatIndex).bid === 0
+          const partner = table.partnerOf(winnerSeat.seatIndex)
+          const partnerOnNil = partner.bid === 0
+          const bonusOf = (seat: { blindNil: boolean }): number =>
+            seat.blindNil ? BLIND_NIL_VALUE : NIL_VALUE
+          const label = winnerSeat.blindNil ? 'BLIND NIL' : 'NIL'
           ctx.log(
             'result',
             partnerOnNil
-              ? `${winnerSeat.name}'s NIL is broken — the double nil is off, so ${team?.name} ` +
-                'loses the 400 rather than taking a penalty.'
-              : `${winnerSeat.name}'s NIL is broken — that trick costs ${team?.name} ` +
-                `${NIL_VALUE} points.`,
+              ? `${winnerSeat.name}'s ${label} is broken — the double nil is off, so ` +
+                `${team?.name} loses the ` +
+                `${(bonusOf(winnerSeat) + bonusOf(partner)) * 2} rather than taking a penalty.`
+              : `${winnerSeat.name}'s ${label} is broken — that trick costs ${team?.name} ` +
+                `${bonusOf(winnerSeat)} points.`,
             winnerSeat.id
           )
         }
@@ -180,20 +190,29 @@ export class SpadesDriver implements GameDriver {
           broke.length === scored.nils.length
             ? 'both took tricks'
             : `${broke.map((n) => n.name).join(' and ')} took a trick`
+        const kind = scored.nils.every((n) => n.blind)
+          ? 'DOUBLE BLIND NIL'
+          : scored.nils.some((n) => n.blind)
+            ? 'DOUBLE NIL (one of them blind)'
+            : 'DOUBLE NIL'
         ctx.log(
           'result',
           broke.length === 0
-            ? `DOUBLE NIL: ${who} both took nothing — +${scored.nilPoints}.`
+            ? `${kind}: ${who} both took nothing — +${scored.nilPoints}.`
             : `${who} both bid nil and ${blame} — no nil penalty, but the contract ` +
               'was 0 so every trick they took is a bag.'
         )
       } else {
         for (const nil of scored.nils) {
+          // A blind nil is worth double, so the number has to come from the
+          // bid rather than from a constant.
+          const value = nil.blind ? BLIND_NIL_VALUE : NIL_VALUE
+          const label = nil.blind ? 'blind nil' : 'nil'
           ctx.log(
             'result',
             nil.made
-              ? `${nil.name} brought the nil home — +${NIL_VALUE}.`
-              : `${nil.name} failed the nil — −${NIL_VALUE}.`,
+              ? `${nil.name} brought the ${label} home — +${value}.`
+              : `${nil.name} failed the ${label} — −${value}.`,
             table.state.players[nil.seatIndex].id
           )
         }
@@ -229,6 +248,86 @@ export class SpadesDriver implements GameDriver {
       return 'played'
     }
     return table.isMatchOver ? 'ended' : 'played'
+  }
+
+  /**
+   * The blind-nil round, when the rule is on and somebody is far enough behind.
+   * Asked before the ordinary bidding and **without showing the seat its hand**
+   * — that is the whole of what makes it blind.
+   */
+  private async runBlindNilOffers(): Promise<void> {
+    const ctx = this.ctx
+    const table = this.table
+    if (!table.blindBidding) return
+
+    ctx.log(
+      'deal',
+      'Blind nil is on offer: a nil declared before seeing a single card, for ' +
+        `±${BLIND_NIL_VALUE}.`
+    )
+    ctx.pushSnapshot()
+    await ctx.beat(0.6)
+
+    for (;;) {
+      const seat = table.pendingBlindSeat
+      if (!seat || ctx.isStopping) break
+
+      const player = ctx.configFor(seat.id)
+      if (!player) {
+        table.setBlindNil(seat.seatIndex, false)
+        continue
+      }
+
+      const deficit = table.blindNilDeficit(seat.seatIndex)
+      const result = await ctx.ask<boolean>({
+        player,
+        prompt: buildSpadesBlindNilPrompt(table.state, seat, deficit, this.settings.spades),
+        parse: (text) => parseSpadesBlindNilReply(text),
+        // Declining is the fallback, and not a close call: a blind nil is
+        // ±200 taken sight unseen, so committing a model to one because it
+        // failed to answer would be the worst default in the app. Same
+        // principle as the ordinary bid never falling back to nil, with twice
+        // the swing behind it.
+        fallback: false
+      })
+      if (ctx.isStopping) return
+
+      if (result.fallbackReason) {
+        ctx.log(
+          'error',
+          `${player.name} could not answer the blind nil offer (${result.fallbackReason}) — ` +
+            'declining on its behalf.',
+          player.id
+        )
+      }
+
+      table.setBlindNil(seat.seatIndex, result.action)
+      ctx.recordDecision(
+        player,
+        result.action ? 'bids BLIND NIL' : 'declines blind nil',
+        result
+      )
+      if (result.action) {
+        ctx.log(
+          'action',
+          `${seat.name} bids BLIND NIL — ${deficit} points behind, and has not seen a card.`,
+          player.id
+        )
+      }
+      ctx.pushSnapshot()
+      await ctx.beat(result.action ? 1 : 0.4)
+    }
+
+    const blind = table.state.players.filter((p) => p.blindNil)
+    if (blind.length === 2 && blind[0].teamIndex === blind[1].teamIndex) {
+      ctx.log(
+        'result',
+        `DOUBLE BLIND NIL — ${blind.map((p) => p.name).join(' and ')} have both committed ` +
+          'sight unseen.'
+      )
+      ctx.pushSnapshot()
+      await ctx.beat(1.2)
+    }
   }
 
   /** Four bids, in turn, each one visible to everybody who bids after it. */

@@ -2582,6 +2582,28 @@ function respondSpadesNil(prompt: string): string {
   return respondSpades(prompt)
 }
 
+/**
+ * Drives the score apart on purpose: one partnership bids the whole thirteen
+ * every hand and is therefore always set, so the other is 100+ ahead from the
+ * first hand on.
+ *
+ * Blind nil is only offered to a side at least 100 behind, and with every seat
+ * bidding a flat 3 the two partnerships can both make their contracts and stay
+ * level — so a test that waits for the offer flaked about one run in eight.
+ * The gap has to be manufactured, not hoped for.
+ */
+function respondSpadesLopsided(prompt: string): string {
+  if (prompt.includes('How many tricks do you bid?')) {
+    const me = prompt.match(/- (\S+) \(you\)/)
+    const doomed = me ? me[1] === 'Seat0' || me[1] === 'Seat2' : false
+    return JSON.stringify({
+      reasoning: doomed ? 'Everything.' : 'Just the one.',
+      bid: doomed ? 13 : 1
+    })
+  }
+  return respondSpades(prompt)
+}
+
 test('a spades match runs end to end and conserves tricks and scores', async () => {
   const sink = capture()
   mockOpenRouter(respondSpades, sink)
@@ -2903,4 +2925,99 @@ test('the spades play prompt says who is winning the trick and what the contract
   // "whose trick is this" is the question the whole decision turns on.
   assert.ok(following.some((p) => p.includes('[your partner] played')))
   assert.ok(following.every((p) => p.includes('[opponent] played')))
+})
+
+test('the blind nil prompt shows no cards at all — that is the whole of what makes it blind', async () => {
+  const sink = capture()
+  // Accept every blind offer, so the whole path runs.
+  mockOpenRouter((prompt) => {
+    if (prompt.includes('Do you bid blind nil?')) {
+      return JSON.stringify({ reasoning: 'Nothing to lose.', blind: true })
+    }
+    return respondSpadesLopsided(prompt)
+  }, sink)
+
+  // Blind nil is only offered to a partnership at least 100 behind, and the
+  // scores start level, so hand 1 can never produce the offer. The lopsided
+  // responder guarantees a 130-point gap after it rather than leaving the test
+  // to hope one turns up.
+  await new MatchRunner(
+    spadesSettings({
+      maxRounds: 4,
+      spades: { ...defaultSettings().spades, blindNil: true, bustScore: 0 }
+    }),
+    'test-key',
+    sink.emit
+  ).run()
+
+  const blindPrompts = sink.prompts.filter((p) => p.includes('Do you bid blind nil?'))
+  assert.ok(blindPrompts.length > 0, 'somebody fell far enough behind to be offered one')
+
+  for (const prompt of blindPrompts) {
+    // The load-bearing assertion of the whole feature. A card code anywhere in
+    // here turns the most distinctive decision in the game into an ordinary nil
+    // bid, silently and without failing anything else.
+    const leaked = prompt.match(/\b(10|[2-9TJQKA])[cdhs]\b/g)
+    assert.equal(leaked, null, `the blind nil prompt leaked cards: ${leaked?.join(' ')}`)
+    // Anchored to a line start: the prompt legitimately says "you know nothing
+    // about your hand", and a loose match on those two words fails on its own
+    // prose rather than on a leak. What must not exist is a hand *section*.
+    assert.doesNotMatch(prompt, /^Your hand/m, 'and it must not offer a hand section')
+    assert.match(prompt, /you have NOT seen your cards/i)
+  }
+})
+
+test('a model that cannot answer the blind offer is never committed to one', async () => {
+  const sink = capture()
+  // Garbage for the blind offer, sane answers for everything else, so the
+  // fallback is exercised without the rest of the hand falling apart.
+  mockOpenRouter((prompt) => {
+    if (prompt.includes('Do you bid blind nil?')) return 'I would rather not say.'
+    return respondSpadesLopsided(prompt)
+  }, sink)
+
+  await new MatchRunner(
+    spadesSettings({
+      maxRounds: 4,
+      spades: { ...defaultSettings().spades, blindNil: true, bustScore: 0 }
+    }),
+    'test-key',
+    sink.emit
+  ).run()
+
+  assert.ok(
+    sink.prompts.some((p) => p.includes('Do you bid blind nil?')),
+    'the offer was made'
+  )
+  // A blind nil is ±200 taken sight unseen. Committing a model to one because
+  // it failed to answer would be the worst default in the app — worse than the
+  // ordinary bid falling back to nil, which is already ruled out.
+  const spades = tableOf(finalSnapshot(sink), 'spades')
+  assert.ok(spades)
+  for (const player of spades.players) {
+    assert.equal(player.blindNil, false, `${player.name} was defaulted into a blind nil`)
+  }
+  assert.ok(
+    logTexts(sink).some((t) => /could not answer the blind nil offer/.test(t)),
+    'and the operator is told it declined on the model behalf'
+  )
+})
+
+test('blind nil is never offered when the rule is off, however far behind a side falls', async () => {
+  const sink = capture()
+  mockOpenRouter(respondSpades, sink)
+
+  await new MatchRunner(
+    spadesSettings({ maxRounds: 4, spades: { ...defaultSettings().spades, bustScore: 0 } }),
+    'test-key',
+    sink.emit
+  ).run()
+
+  assert.ok(
+    !sink.prompts.some((p) => p.includes('Do you bid blind nil?')),
+    'the default is off, so the offer never appears'
+  )
+  for (const system of sink.systemPrompts) {
+    assert.match(system, /Blind nil is not offered at this table/i)
+  }
 })

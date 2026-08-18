@@ -225,8 +225,21 @@ function SpadesRules({ settings, patch, locked }: RulesPanelProps): React.JSX.El
         either fails, though the contract is then 0 so every trick they took is
         a bag. Blind nil is not offered.
       </p>
+      <Toggle
+        label="Offer blind nil"
+        checked={spades.blindNil}
+        disabled={locked}
+        onChange={(blindNil) => patch({ spades: { ...spades, blindNil } })}
+      />
       <p className="panel-hint">
-        Turning the toggle off is the harsher house rule: a trick the nil bidder
+        With blind nil on, a partnership <strong>100 or more points behind</strong>{' '}
+        is offered a nil declared <em>before its seats have seen a card</em> —
+        worth ±200 rather than ±100, and +800 if both partners take one and
+        bring it home. Nobody qualifies in the first hand, since the scores
+        start level. A model that cannot answer always declines.
+      </p>
+      <p className="panel-hint">
+        Turning the nil-tricks toggle off is the harsher house rule: a trick the nil bidder
         is forced to take becomes a bag but does <em>not</em> help the partner's
         contract, so the partner's bid has to be made unaided. Whichever is set
         is stated in the system prompt, so no model has to guess.
