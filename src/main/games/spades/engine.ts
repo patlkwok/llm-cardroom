@@ -56,8 +56,11 @@ export interface SpadesSeed {
  * - Partnerships are **positional**: seats 0 and 2 against seats 1 and 3. That
  *   is only safe because the roster is fixed for the match; a seat renumbering
  *   would swap somebody's partner for an opponent halfway through.
- * - A bid of **0 is nil**, worth ±100 to the partnership on its own. Blind nil
- *   is not offered, the way surrender is not offered at blackjack.
+ * - A bid of **0 is nil**, worth ±100 to the partnership on its own.
+ * - **Blind nil** — declared before the seat has seen a card, worth double — is
+ *   available behind `blindNil` and off by default. It is offered only to a
+ *   partnership at least `BLIND_NIL_DEFICIT` behind, so it can never happen in
+ *   the first hand.
  * - **Double nil — both partners on nil — is scored as one thing, not two.**
  *   Both bringing it home doubles the pair's nil bonuses (400); either of them
  *   failing carries no nil penalty at all. Scoring it as two independent nils
