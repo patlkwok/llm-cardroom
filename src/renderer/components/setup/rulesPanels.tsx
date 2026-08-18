@@ -170,6 +170,61 @@ function HeartsRules({ settings, patch, locked }: RulesPanelProps): React.JSX.El
   )
 }
 
+function SpadesRules({ settings, patch, locked }: RulesPanelProps): React.JSX.Element {
+  const spades = settings.spades
+  return (
+    <>
+      <Field label="Game ends at">
+        <NumberInput
+          value={spades.targetScore}
+          min={100}
+          step={100}
+          disabled={locked}
+          suffix="points"
+          onChange={(targetScore) => patch({ spades: { ...spades, targetScore } })}
+        />
+      </Field>
+      <Field label="Out at">
+        <NumberInput
+          value={spades.bustScore}
+          max={0}
+          step={100}
+          disabled={locked}
+          suffix="points (0 = no floor)"
+          onChange={(bustScore) => patch({ spades: { ...spades, bustScore } })}
+        />
+      </Field>
+      {/* The reason to play this one rather than a fifth free-for-all. */}
+      <p className="panel-hint">
+        <strong>Partners sit opposite</strong> — north with south, east with
+        west — and share one score. They may not talk, so each model has to read
+        its partner's hand out of the bidding and the play. It is the only game
+        here that is not every seat for itself.
+      </p>
+      {/* Every one of these is a decision, not a lookup: Spades is less
+          standardised than Hearts, and these are the lines tables disagree on.
+          They are stated in force in the system prompt too. */}
+      <p className="panel-hint">
+        Spades are always trump. Each player bids tricks; the partnership's
+        contract is both bids added up. Making it scores 10 a trick, missing it
+        loses 10 a trick, and <strong>every 10 overtricks costs 100 points</strong>{' '}
+        — so bags punish sandbagging a hand or two later.
+      </p>
+      <p className="panel-hint">
+        A bid of 0 is <strong>nil</strong>: ±100 on its own, and a trick the nil
+        bidder is forced to take still counts towards the partner's contract.
+        Blind nil is not offered.
+      </p>
+      <p className="panel-hint">
+        Exactly four models, fixed for the match — partnerships are positional,
+        so a seat joining would hand somebody a different partner. When only one
+        card is legal it is played without asking a model, which is free and
+        cannot be answered illegally.
+      </p>
+    </>
+  )
+}
+
 function TwentyFourRules({ settings, patch, locked, playerCount }: RulesPanelProps): React.JSX.Element {
   const rules = settings.twentyfour
   return (
@@ -221,5 +276,6 @@ export const RULES_PANELS: Record<GameKind, RulesPanel> = {
   blackjack: BlackjackRules,
   poker: PokerRules,
   hearts: HeartsRules,
+  spades: SpadesRules,
   twentyfour: TwentyFourRules
 }

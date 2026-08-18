@@ -8,6 +8,7 @@ import {
 import { BlackjackView, emptyBlackjackState } from './BlackjackView.tsx'
 import { HeartsView, emptyHeartsState } from './HeartsView.tsx'
 import { PokerView, emptyPokerState } from './PokerView.tsx'
+import { SpadesView, emptySpadesState } from './SpadesView.tsx'
 import { TwentyFourView, emptyTwentyFourState } from './TwentyFourView.tsx'
 
 export interface GameViewProps {
@@ -48,6 +49,13 @@ export const GAME_VIEWS: Partial<Record<GameKind, GameView>> = {
       targetScore={settings.hearts.targetScore}
     />
   ),
+  spades: ({ snapshot, settings, thinking }) => (
+    <SpadesView
+      state={tableOf(snapshot, 'spades') ?? emptySpadesState(settings)}
+      thinking={thinking}
+      rules={settings.spades}
+    />
+  ),
   twentyfour: ({ snapshot, settings, thinking }) => (
     <TwentyFourView
       state={tableOf(snapshot, 'twentyfour') ?? emptyTwentyFourState(settings)}
@@ -68,6 +76,8 @@ export function roundNumberOf(table: TableState | null | undefined): number {
       return table.handNumber
     case 'hearts':
       return table.handNumber
+    case 'spades':
+      return table.handNumber
     case 'twentyfour':
       return table.roundNumber
   }
@@ -82,6 +92,8 @@ export function seatedIdsOf(table: TableState | null | undefined): string[] {
     case 'poker':
       return table.seats.map((seat) => seat.id)
     case 'hearts':
+      return table.players.map((player) => player.id)
+    case 'spades':
       return table.players.map((player) => player.id)
     case 'twentyfour':
       return table.players.map((player) => player.id)

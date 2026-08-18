@@ -1369,13 +1369,24 @@ test('ordinary rate limiting still retries rather than killing the match', async
       ok: true,
       status: 200,
       json: async () => ({
-        choices: [{ message: { content: '{"reasoning":"ok","action":"stand"}' } }],
+        choices: [{ message: { content: '{"reasoning":"ok","action":"stand","bet":25}' } }],
         usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0 }
       })
     }
   }) as unknown as typeof fetch
 
-  await new MatchRunner(blackjackSettings({ maxRounds: 2 }), 'test-key', sink.emit).run()
+  // Self-sizing bets guarantee a call per round. Without them this test flaked
+  // about one run in a hundred: a natural on either side resolves the deal with
+  // no decision in it at all, so a two-round table can genuinely ask nothing,
+  // and then there is no first call to rate-limit and nothing to retry.
+  await new MatchRunner(
+    blackjackSettings({
+      maxRounds: 2,
+      blackjack: { ...defaultSettings().blackjack, modelChoosesBet: true }
+    }),
+    'test-key',
+    sink.emit
+  ).run()
 
   const final = sink.events.filter((e) => e.type === 'snapshot').pop()
   assert.equal(final?.type, 'snapshot')
@@ -2523,4 +2534,338 @@ test('a hold hand skips the pass steps entirely', async () => {
       'a hold hand has no pass to show'
     )
   }
+})
+
+/* ---------------------------------------------------------------- spades */
+
+function spadesSettings(overrides: Partial<MatchSettings> = {}): MatchSettings {
+  return {
+    ...defaultSettings(),
+    game: 'spades',
+    stepDelayMs: 0,
+    maxRounds: 2,
+    players: Array.from({ length: 4 }, (_, i) => ({
+      id: `p${i}`,
+      name: `Seat${i}`,
+      modelId: 'test/model',
+      modelName: 'Test',
+      reasoningEffort: 'default' as const
+    })),
+    ...overrides
+  }
+}
+
+/**
+ * Answers both spades decision shapes by reading the prompt the runner built.
+ *
+ * A mock that answers wrongly photographs as a bug in the app, and reads as one
+ * in a test too: every seat would fall back, and the assertions below would be
+ * measuring the fallback path rather than the game.
+ */
+function respondSpades(prompt: string): string {
+  const legal = prompt.match(/^Legal plays: (.+)$/m)
+  if (legal) {
+    const first = legal[1].split(',')[0].trim()
+    return JSON.stringify({ reasoning: `Playing ${first}.`, card: first })
+  }
+  if (prompt.includes('How many tricks do you bid?')) {
+    return JSON.stringify({ reasoning: 'About three.', bid: 3 })
+  }
+  return 'I do not understand the question.'
+}
+
+/** A seat that always bids nil, so the ±100 path is exercised end to end. */
+function respondSpadesNil(prompt: string): string {
+  if (prompt.includes('How many tricks do you bid?')) {
+    return JSON.stringify({ reasoning: 'Nothing at all.', bid: 0 })
+  }
+  return respondSpades(prompt)
+}
+
+test('a spades match runs end to end and conserves tricks and scores', async () => {
+  const sink = capture()
+  mockOpenRouter(respondSpades, sink)
+
+  await new MatchRunner(spadesSettings({ maxRounds: 3 }), 'test-key', sink.emit).run()
+
+  const snapshot = finalSnapshot(sink)
+  assert.equal(snapshot.status, 'finished')
+  const spades = tableOf(snapshot, 'spades')
+  assert.ok(spades)
+  assert.equal(spades.handsPlayed, 3, 'played the requested number of hands')
+  assert.equal(spades.players.length, 4)
+  assert.equal(spades.teams.length, 2)
+
+  // 13 tricks a hand, every hand, split between exactly two partnerships.
+  const trickLines = logTexts(sink).filter((t) => /^Trick \d+ to /.test(t))
+  assert.equal(trickLines.length, 39, `expected 39 tricks over 3 hands, saw ${trickLines.length}`)
+
+  const [a, b] = spades.teams
+  assert.equal(a.tricksWon + b.tricksWon, 13, 'the last hand tricks are all accounted for')
+  for (const player of spades.players) {
+    assert.equal(player.hand.length, 0, `${player.name} still holds cards`)
+  }
+})
+
+test('a spades model is shown only its own hand, never its partner’s', async () => {
+  const sink = capture()
+  mockOpenRouter(respondSpades, sink)
+
+  await new MatchRunner(spadesSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  const playPrompts = sink.prompts.filter((p) => p.includes('Legal plays:'))
+  assert.ok(playPrompts.length > 0, 'the models were asked to play')
+
+  for (const prompt of playPrompts) {
+    assert.equal((prompt.match(/^Your hand: /gm) ?? []).length, 1, 'exactly one hand is yours')
+
+    // This is the whole point of the game: partners may not talk, so a model
+    // has to infer its partner's holding from the bidding and the play. A
+    // partner's cards appearing in the prompt would quietly remove the only
+    // capability Spades tests that the other four games do not.
+    const table = prompt.split('At the table:')[1]?.split('\n\n')[0] ?? ''
+    assert.ok(table.includes('YOUR PARTNER'), 'the partner is named')
+    const leaked = table.match(/\b(10|[2-9TJQKA])[cdhs]\b/g)
+    assert.equal(leaked, null, `a seat's cards leaked into the table block: ${table}`)
+  }
+
+  // The bidding prompts are the other half: a seat bids before a card is
+  // played, so a leak there would be worth even more.
+  for (const prompt of sink.prompts.filter((p) => p.includes('How many tricks do you bid?'))) {
+    const table = prompt.split('At the table:')[1]?.split('\n\n')[0] ?? ''
+    assert.equal(
+      table.match(/\b(10|[2-9TJQKA])[cdhs]\b/g),
+      null,
+      'no cards in the bidding table block'
+    )
+  }
+})
+
+test('the pinned spades rules are stated in force, not left to be inferred', async () => {
+  const sink = capture()
+  mockOpenRouter(respondSpades, sink)
+
+  await new MatchRunner(spadesSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  assert.ok(sink.systemPrompts.length > 0)
+  for (const system of sink.systemPrompts) {
+    // Spades is less standardised than Hearts, and tables genuinely disagree on
+    // every one of these. A model that guesses differently plays a different
+    // game from the one being dealt.
+    assert.match(system, /Spades are always trump/i)
+    assert.match(system, /may NOT talk to your partner/i)
+    assert.match(system, /bid of 0 is a NIL bid/i)
+    assert.match(system, /10 bags your partnership collects costs it 100 points/i)
+    assert.match(system, /still counts towards the partnership's contract/i)
+    assert.match(system, /set partnership takes no bags at all/i)
+  }
+})
+
+test('a forced spades play is narrated but never charged to a model', async () => {
+  const sink = capture()
+  mockOpenRouter(respondSpades, sink)
+
+  await new MatchRunner(spadesSettings({ maxRounds: 2 }), 'test-key', sink.emit).run()
+
+  const spades = tableOf(finalSnapshot(sink), 'spades')
+  assert.ok(spades)
+  assert.equal(spades.totalPlays, 104, 'two hands is 104 plays')
+  assert.ok(spades.forcedPlays > 0, 'forced plays run about a quarter of a trick-taking hand')
+
+  // Narrated in the table log: a silent gap would be worse than the call.
+  const forcedLines = logTexts(sink).filter((t) => t.includes('(forced'))
+  assert.equal(forcedLines.length, spades.forcedPlays, 'every forced play is logged')
+
+  // But kept out of the Reasoning feed, which is for decisions.
+  const plays = sink.events.filter(
+    (e) => e.type === 'decision' && e.record.actionLabel.startsWith('plays ')
+  )
+  assert.equal(
+    plays.length,
+    spades.totalPlays - spades.forcedPlays,
+    'a forced play must not be recorded as a decision'
+  )
+  assert.ok(
+    logTexts(sink).some((t) => /\d+ of \d+ plays so far were forced/.test(t)),
+    'the operator is told how much came free'
+  )
+})
+
+test('every seat bids once a hand, and the bid is a decision', async () => {
+  const sink = capture()
+  mockOpenRouter(respondSpades, sink)
+
+  await new MatchRunner(spadesSettings({ maxRounds: 2 }), 'test-key', sink.emit).run()
+
+  const bids = sink.events.filter(
+    (e) => e.type === 'decision' && /^bids /.test(e.record.actionLabel)
+  )
+  assert.equal(bids.length, 8, 'four bids a hand, over two hands')
+
+  const spades = tableOf(finalSnapshot(sink), 'spades')
+  assert.ok(spades)
+  // The contract is the sum of both partners' bids, and every seat bid 3.
+  for (const team of spades.teams) assert.equal(team.contract, 6)
+  assert.ok(
+    logTexts(sink).some((t) => /^Contracts: .*12 tricks bid of 13/.test(t)),
+    'the operator is told what the table committed to'
+  )
+})
+
+test('a nil bid is scored on its own and announced as its own event', async () => {
+  const sink = capture()
+  mockOpenRouter(respondSpadesNil, sink)
+
+  // The floor is off for this one. With all four seats on nil a partnership can
+  // drop two failed nils in the first hand, land exactly on −200 and end the
+  // match there — which made this test pass or fail on the deal rather than on
+  // anything it is about.
+  await new MatchRunner(
+    spadesSettings({
+      maxRounds: 2,
+      spades: { ...defaultSettings().spades, bustScore: 0 }
+    }),
+    'test-key',
+    sink.emit
+  ).run()
+
+  const bids = sink.events.filter(
+    (e) => e.type === 'decision' && e.record.actionLabel === 'bids NIL'
+  )
+  assert.equal(bids.length, 8, 'every seat bid nil, both hands')
+
+  const texts = logTexts(sink)
+  assert.ok(
+    texts.some((t) => /nil/i.test(t)),
+    'each nil is reported one way or the other'
+  )
+
+  // With every seat on nil the contract is zero, so every trick taken is a bag
+  // and every nil that breaks is a hundred off.
+  const spades = tableOf(finalSnapshot(sink), 'spades')
+  assert.ok(spades)
+  for (const team of spades.teams) {
+    assert.equal(team.contract, 0, 'two nils contract for nothing')
+  }
+  assert.equal(
+    spades.teams[0].tricksWon + spades.teams[1].tricksWon,
+    13,
+    'the tricks still all landed somewhere'
+  )
+})
+
+test('spades refuses to start without exactly four models', async () => {
+  for (const count of [3, 5]) {
+    const sink = capture()
+    mockOpenRouter(respondSpades, sink)
+
+    const settings = spadesSettings()
+    const players = [...settings.players]
+    while (players.length < count) {
+      players.push({
+        id: `x${players.length}`,
+        name: `Extra${players.length}`,
+        modelId: 'test/model',
+        modelName: 'Test',
+        reasoningEffort: 'default' as const
+      })
+    }
+    settings.players = players.slice(0, count)
+
+    await new MatchRunner(settings, 'test-key', sink.emit).run()
+
+    const final = finalSnapshot(sink)
+    assert.equal(final.status, 'error', `${count} models should be refused`)
+    assert.match(final.errorText ?? '', /exactly 4 models/)
+  }
+})
+
+test('a spades table never seats or unseats anybody mid-match', async () => {
+  const sink = capture()
+  mockOpenRouter(respondSpades, sink)
+
+  const settings = spadesSettings({ maxRounds: 0, stepDelayMs: 12 })
+  const runner = new MatchRunner(settings, 'test-key', sink.emit)
+  const running = runner.run()
+
+  await new Promise((r) => setTimeout(r, 250))
+  // Sharper here than at Hearts: partnerships are positional, so a seat leaving
+  // would renumber the table and hand somebody a different partner mid-match.
+  runner.applyLiveSettings({ ...settings, players: settings.players.slice(0, 3) })
+  runner.applyLiveSettings({
+    ...settings,
+    players: [
+      ...settings.players,
+      {
+        id: 'late',
+        name: 'Latecomer',
+        modelId: 'test/model',
+        modelName: 'Test',
+        reasoningEffort: 'default' as const
+      }
+    ]
+  })
+  await new Promise((r) => setTimeout(r, 400))
+  runner.stop()
+  await running
+
+  const texts = logTexts(sink)
+  assert.ok(!texts.some((t) => t.includes('joins the table')), 'nobody may join')
+  assert.ok(!texts.some((t) => t.includes('leaves the table')), 'nobody may leave')
+  assert.ok(
+    !texts.some((t) => t.includes('will join next')),
+    'the table is never paused for an arrival'
+  )
+
+  const spades = tableOf(finalSnapshot(sink), 'spades')
+  assert.equal(spades?.players.length, 4, 'still exactly four seats')
+  // And the partnerships are still the ones the match started with.
+  assert.deepEqual(spades?.teams[0].seatIndices, [0, 2])
+  assert.deepEqual(spades?.teams[1].seatIndices, [1, 3])
+})
+
+test('a model that cannot answer a spades prompt still finishes the hand', async () => {
+  const sink = capture()
+  mockOpenRouter(() => 'Sorry, I would rather not.')
+
+  await new MatchRunner(spadesSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  const snapshot = finalSnapshot(sink)
+  assert.equal(snapshot.status, 'finished', 'the table kept moving')
+  const spades = tableOf(snapshot, 'spades')
+  assert.ok(spades)
+  assert.equal(spades.handsPlayed, 1)
+  assert.equal(spades.teams[0].tricksWon + spades.teams[1].tricksWon, 13)
+
+  // The fallback bid must never be nil: a hundred-point swing charged to a seat
+  // that merely failed to answer is a far worse outcome than a cautious 1.
+  for (const player of spades.players) {
+    assert.notEqual(player.bid, 0, `${player.name} was defaulted into a nil bid`)
+    assert.ok((player.bid ?? 0) >= 1)
+  }
+})
+
+test('the spades play prompt says who is winning the trick and what the contract needs', async () => {
+  const sink = capture()
+  mockOpenRouter(respondSpades, sink)
+
+  await new MatchRunner(spadesSettings({ maxRounds: 1 }), 'test-key', sink.emit).run()
+
+  // Both are derivable from what is already in the prompt, and both are stated
+  // anyway — the same argument as quoting pot odds at poker. A model spending
+  // its token budget re-deriving them is spending it on the wrong thing.
+  const following = sink.prompts.filter((p) => p.includes('This trick so far'))
+  assert.ok(following.length > 0, 'somebody followed to a trick')
+  assert.ok(
+    following.every((p) => /winning it at the moment, with /.test(p)),
+    'every following seat is told who currently holds the trick'
+  )
+  assert.ok(
+    following.every((p) => /Your partnership bid \d+ and has taken \d+/.test(p)),
+    'and where the contract stands'
+  )
+  // Partner and opponents are labelled on every card already down, because
+  // "whose trick is this" is the question the whole decision turns on.
+  assert.ok(following.some((p) => p.includes('[your partner] played')))
+  assert.ok(following.every((p) => p.includes('[opponent] played')))
 })

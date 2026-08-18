@@ -1,5 +1,7 @@
 /** Prompt plumbing shared by every game: the notation block, and reply parsing. */
 
+import type { Card } from '../../../shared/cards.ts'
+
 export interface Prompt {
   system: string
   user: string
@@ -64,4 +66,30 @@ export function readReasoning(obj: Record<string, unknown>): string {
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
   return ''
+}
+
+const RANK_BY_LETTER: Record<string, number> = {
+  '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
+  T: 10, '10': 10, J: 11, Q: 12, K: 13, A: 14
+}
+
+/**
+ * Reads "Qs", "10h", "Q of s"-ish shorthand back into a Card.
+ *
+ * Shared the moment a second card game needed it. Every trick-taking prompt
+ * asks for exactly this notation, and two copies of the accepted spellings
+ * would mean one game quietly accepting a form the other rejects.
+ */
+export function parseCardCode(text: string): Card | null {
+  const clean = text.trim().replace(/[^0-9A-Za-z]/g, '')
+  const match = clean.match(/^(10|[2-9TJQKA])([cdhs])$/i)
+  if (!match) return null
+  const rank = RANK_BY_LETTER[match[1].toUpperCase()]
+  if (!rank) return null
+  return { rank: rank as Card['rank'], suit: match[2].toLowerCase() as Card['suit'] }
+}
+
+/** Full suit names, for prose that should not read like card codes. */
+export function suitWord(suit: string): string {
+  return { c: 'clubs', d: 'diamonds', h: 'hearts', s: 'spades' }[suit] ?? suit
 }

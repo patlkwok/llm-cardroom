@@ -1,5 +1,5 @@
 /**
- * Drives the built app and captures screenshots of the three main views.
+ * Drives the built app and captures screenshots of every view.
  *
  *   npm run build && npm run screenshot     # -> screenshots/*.png
  *
@@ -88,12 +88,27 @@ function installOpenRouterMock() {
         // put a wall of fallbacks into the captured frame.
         const hand = (body.match(/Your hand \(13 cards\): ([^"\\]*)/) || ['', ''])[1]
         answer = { pass: hand.trim().split(/\s+/).slice(0, 3) }
+      } else if (body.includes('How many tricks do you bid?')) {
+        // Spades bidding. One bid in four is nil, so a capture reliably shows
+        // the nil plate — the most distinctive thing on this felt — instead of
+        // waiting on a deal that happens to produce one. Answering this with an
+        // `action` would fail three times and fill the frame with fallbacks.
+        // The FIRST bid of each hand, not the last: nilling on the fourth
+        // meant the NIL plate only ever existed once every seat had bid, so
+        // the "some seat still to bid" frame the capture waits for could not
+        // occur and the harness sat there until it timed out.
+        const seat = (globalThis.__mockSpadesBid || 0) % 4
+        globalThis.__mockSpadesBid = (globalThis.__mockSpadesBid || 0) + 1
+        answer = { bid: seat === 0 ? 0 : 3 }
       } else if (body.includes('Legal plays:')) {
-        // Hearts play: name one of the cards actually on offer.
+        // The play decision, shared by both trick-taking games: name one of
+        // the cards actually on offer.
         const plays = (body.match(/Legal plays: ([^"\\]*)/) || ['', ''])[1]
         const options = plays.split(',').map((c) => c.trim()).filter(Boolean)
         // Prefer a heart or the queen when one is legal, so captured frames
-        // show points changing hands rather than thirteen quiet tricks.
+        // show points changing hands rather than thirteen quiet tricks. At
+        // Spades the same preference often lands on a spade, which puts trumps
+        // on the felt, and every option offered is legal either way.
         const juicy = options.find((c) => c.endsWith('h') || c === 'Qs')
         answer = { card: juicy || options[0] }
       } else if (body.includes('What is your expression?')) {
@@ -304,6 +319,47 @@ async function main() {
     await shoot(win, '06-hearts-trick.png')
     await stopMatch(win)
 
+    // --- spades -----------------------------------------------------------
+    // Same four-hands-of-thirteen width risk as Hearts, on the same shared
+    // .trick-* layout, so it is shot at the same short viewport. What is new
+    // here is the partnership tint and the bid/nil plate, and both only exist
+    // in a rendered frame.
+    await win.click('.segmented button:has-text("Spades")')
+    for (let i = 0; i < 4; i++) await seatModel(win, i)
+    await win.fill('input[type="range"]', '500')
+
+    await win.click('.start-button')
+    await waitForCounter(win, /Hand [1-9]/)
+
+    // Bidding is a phase of its own and worth its own frame: it is the only
+    // time the plates show a mix of "has not bid" and a live bid, and the mock
+    // guarantees one nil per hand so the NIL plate is always in shot.
+    await win.waitForFunction(
+      () =>
+        document.querySelector('.sp-nil') !== null &&
+        document.querySelectorAll('.sp-bid-none').length > 0,
+      null,
+      { timeout: 120000 }
+    )
+    await shoot(win, '07a-spades-bidding.png')
+
+    // Then the same compound condition Hearts uses, for the same reason: a
+    // completed trick with the hands still full, so the thirteen-card fans, the
+    // team cards and the seat plates are all on screen at once. Waiting on the
+    // result alone lands on trick 13, where every hand is empty.
+    await win.waitForFunction(
+      () => {
+        const played = document.querySelectorAll('.trick-play').length
+        const fan = document.querySelector('.card-fan')
+        const held = fan ? fan.children.length : 0
+        return played === 4 && document.querySelector('.trick-result') && held >= 5
+      },
+      null,
+      { timeout: 120000 }
+    )
+    await shoot(win, '07-spades-trick.png')
+    await stopMatch(win)
+
     // --- the 24 puzzle ----------------------------------------------------
     // Six seats, the maximum: this is the game where every seat answers every
     // round, so a full table is both the widest board and the most expensive
@@ -318,7 +374,7 @@ async function main() {
     // winner marked and the solution revealed. Waiting for the solution chip
     // is what guarantees the round is over rather than still being answered.
     await win.waitForSelector('.tf-solution', { timeout: 120000 })
-    await shoot(win, '07-twentyfour-round.png')
+    await shoot(win, '08-twentyfour-round.png')
 
     // Let a few more puzzles run so the per-seat records differ, then stop and
     // photograph the final standings — solve rate and typical answering time
@@ -330,7 +386,7 @@ async function main() {
     )
     await stopMatch(win)
     await win.waitForSelector('.tf-board-head', { timeout: 20000 })
-    await shoot(win, '08-twentyfour-final.png')
+    await shoot(win, '09-twentyfour-final.png')
     await win.setViewportSize({ width: 1440, height: 940 })
 
     console.log(`\nScreenshots written to ${OUT_DIR}`)

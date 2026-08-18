@@ -1,7 +1,16 @@
 import { cardCode, type Card } from '../../../shared/cards.ts'
 import type { HeartsPlayer, HeartsRules, HeartsState, HeartsTrick } from '../../../shared/types.ts'
 import { cardPoints, sameCard } from '../hearts/engine.ts'
-import { extractJson, NOTATION, notJson, readReasoning, type ParseOutcome, type Prompt } from './shared.ts'
+import {
+  extractJson,
+  NOTATION,
+  notJson,
+  parseCardCode,
+  readReasoning,
+  suitWord,
+  type ParseOutcome,
+  type Prompt
+} from './shared.ts'
 
 const PASS_PHRASE: Record<string, string> = {
   left: 'to the player on your left',
@@ -228,23 +237,4 @@ export function parseHeartsPlayReply(text: string, legal: Card[]): ParseOutcome<
     }
   }
   return { ok: true, value: card, reasoning }
-}
-
-const RANK_BY_LETTER: Record<string, number> = {
-  '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
-  T: 10, '10': 10, J: 11, Q: 12, K: 13, A: 14
-}
-
-/** Reads "Qs", "10h", "queen of spades"-ish shorthand back into a Card. */
-export function parseCardCode(text: string): Card | null {
-  const clean = text.trim().replace(/[^0-9A-Za-z]/g, '')
-  const match = clean.match(/^(10|[2-9TJQKA])([cdhs])$/i)
-  if (!match) return null
-  const rank = RANK_BY_LETTER[match[1].toUpperCase()]
-  if (!rank) return null
-  return { rank: rank as Card['rank'], suit: match[2].toLowerCase() as Card['suit'] }
-}
-
-function suitWord(suit: string): string {
-  return { c: 'clubs', d: 'diamonds', h: 'hearts', s: 'spades' }[suit] ?? suit
 }

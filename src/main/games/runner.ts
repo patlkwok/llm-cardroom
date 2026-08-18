@@ -16,6 +16,7 @@ import type { AskRequest, DriverContext, GameDriver, LiveSettings, RosterTable }
 import { BlackjackDriver } from './drivers/blackjack.ts'
 import { HeartsDriver } from './drivers/hearts.ts'
 import { PokerDriver } from './drivers/poker.ts'
+import { SpadesDriver } from './drivers/spades.ts'
 import { TwentyFourDriver } from './drivers/twentyfour.ts'
 
 export type Emit = (event: MatchEvent) => void
@@ -35,6 +36,7 @@ const DRIVERS: Partial<Record<GameKind, DriverClass>> = {
   blackjack: BlackjackDriver,
   poker: PokerDriver,
   hearts: HeartsDriver,
+  spades: SpadesDriver,
   twentyfour: TwentyFourDriver
 }
 
@@ -435,6 +437,8 @@ function seatedIds(driver: GameDriver): Set<string> | null {
     case 'poker':
       return new Set(state.seats.map((seat) => seat.id))
     case 'hearts':
+      return new Set(state.players.map((player) => player.id))
+    case 'spades':
       return new Set(state.players.map((player) => player.id))
     case 'twentyfour':
       return new Set(state.players.map((player) => player.id))

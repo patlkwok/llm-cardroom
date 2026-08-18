@@ -4,13 +4,17 @@ A desktop app for watching language models play cards. Seat models from the
 OpenRouter catalogue at a table, press deal, and watch them play — every move
 annotated with the model's own reasoning.
 
-Four games:
+Five games:
 
 - **Blackjack** — one to six models play the house dealer, sharing a single
   shoe, so they face the same cards in the same rounds.
 - **No-Limit Texas Hold'em** — two to eight models play against each other.
 - **Hearts** — exactly four models pass three cards and play thirteen tricks,
   dodging hearts and the queen of spades. Lowest score wins.
+- **Spades** — exactly four models in two fixed partnerships, bidding tricks
+  and playing them out. Partners sit opposite and **may not talk**, so each has
+  to read its partner's hand out of the bidding and the play. It is the only
+  game here that is not every seat for itself.
 - **The 24 puzzle** — up to six models race the same four cards to 24, all
   answering at once.
 
@@ -73,7 +77,7 @@ claiming the key is encrypted.
 3. **Add model** opens the OpenRouter catalogue — search by name or id, and the
    list shows the context window and the price per million tokens. Blackjack
    seats one to six, Hold'em two to eight, the 24 puzzle up to six, and Hearts
-   exactly four.
+   and Spades exactly four each.
 4. Adjust the table rules and the pace, then **Deal me in**.
 
 Expanding a seated player exposes its **reasoning effort**: `Model's default`
@@ -141,10 +145,13 @@ in for the starting stack, and a player who leaves takes their chips with them.
 Drop below two players at poker and the table closes. The table log records each
 arrival and departure.
 
-**Hearts and the 24 puzzle lock their tables** at the first deal instead. Hearts
-is defined around four hands of thirteen cards; the 24 puzzle is scored in
-rounds won, so a model seated halfway through has had fewer chances at them than
-one that answered every puzzle.
+**Hearts, Spades and the 24 puzzle lock their tables** at the first deal
+instead. Hearts is defined around four hands of thirteen cards; at Spades the
+partnerships are *positional* — seats 0 and 2 against 1 and 3 — so a seat
+joining or leaving would renumber the table and hand somebody a different
+partner mid-match; and the 24 puzzle is scored in rounds won, so a model seated
+halfway through has had fewer chances at them than one that answered every
+puzzle.
 
 Adding a model **pauses the table** so you can set it up before it is dealt in.
 A model waiting to join is marked *joins next hand* and its reasoning effort
@@ -195,8 +202,9 @@ replies with one JSON object:
 ```
 
 Raises carry an `amount`, the total the bet is raised *to*. Blackjack uses
-`action`, hearts uses `card` for a play and a three-element `pass` array for the
-exchange — the only decision in the app that returns a set.
+`action`, hearts and spades use `card` for a play, hearts uses a three-element
+`pass` array for the exchange — the only decision in the app that returns a set
+— and spades uses a numeric `bid`, where `0` means nil.
 
 **The 24 puzzle asks for plain text instead**, because its answer is not a
 choice from a list:
@@ -218,8 +226,13 @@ prefixes, a trailing `= 24`, unicode `×` and `÷`, and common synonyms (`hit me
 If a reply is unusable or illegal, the model is told exactly what was wrong and
 asked again, up to three attempts. If it still fails, the table falls back to a
 safe action — stand at blackjack, check-or-fold at poker, the first legal card
-at hearts — records the reason on the decision card, and play continues. **A
-badly behaved model never stalls the table.**
+at hearts and spades — records the reason on the decision card, and play
+continues. **A badly behaved model never stalls the table.**
+
+The one fallback chosen against the grain is the spades bid, which is never
+nil. Nil is worth ±100 on its own, so defaulting a silent model into one would
+charge it the single biggest swing in the game for failing to answer; the
+fallback estimates the hand and clamps to at least 1 instead.
 
 One case is deliberately *not* treated as a bad reply: an answer that is
 well-formed but wrong. At the 24 puzzle a wrong expression is graded, not
@@ -271,6 +284,35 @@ to choose from one option can still burn three retries on a move that was never
 in doubt. Across a full match about a quarter of plays are forced, and the felt
 reports the running count.
 
+**Spades** — spades are always trump, thirteen tricks, game to 500 with a
+partnership that falls to −200 out at once. Each seat bids the tricks it expects
+to take, in turn to the dealer's left, so a seat bidding late knows what its
+partner committed to and one bidding first does not. **The partnership's
+contract is both partners' bids added up**: making it scores 10 a trick, missing
+it loses 10 a trick, and every trick over the contract is a *bag* worth 1 point
+— which sounds good and is not, because **every 10 bags costs 100 points**. Bags
+carry from hand to hand, the only score in the app that persists as a penalty
+rather than as a total, so sandbagging a hand is paid for several hands later.
+
+A bid of **0 is nil**: a promise to take no tricks, worth ±100 on its own. It
+adds nothing to the contract, so the partner's bid has to stand unaided, and a
+trick a nil bidder is forced to take both breaks the nil *and* counts towards
+the contract. Blind nil is not offered.
+
+Spades is genuinely less standardised than Hearts — how a nil bidder's tricks
+are counted, whether a set partnership keeps its bags, and what ten bags costs
+are all real disagreements between tables — so every one of those lines is
+stated in force in the system prompt rather than assumed, and a test asserts
+they are present.
+
+The reason to play it is that **it is the only game here that is not a
+free-for-all**. Partners may not talk, signal or agree anything, so a model has
+to infer its partner's holding from the bidding and the play — and a test
+asserts that no other seat's cards ever reach a prompt, because a leak there
+would quietly remove the one capability Spades measures that the other four
+games do not. As at Hearts, a forced play is made without asking a model at all;
+about a quarter of plays come free.
+
 **The 24 puzzle** — four cards combined with `+ − × ÷` and brackets to make 24,
 with ace = 1, jack = 11, queen = 12, king = 13. Every card is used exactly once
 and division is exact rather than rounded, so `8/(3−8/3) = 24` is a valid answer
@@ -296,15 +338,22 @@ match sorts the board into final standings.
 npm test
 ```
 
-213 tests. The load-bearing ones are invariants rather than examples: chip
+254 tests. The load-bearing ones are invariants rather than examples: chip
 conservation across randomised poker hands and repeated roster churn, per-seat
 bankroll accounting at blackjack, card conservation on the shoe, 52 cards and
-exactly 26 points conserved through every hearts hand, and exact-rational
-arithmetic for the 24 puzzle checked against an independently written solver.
+exactly 26 points conserved through every hearts hand, all thirteen tricks
+accounted for between the two spades partnerships, and exact-rational arithmetic
+for the 24 puzzle checked against an independently written solver.
 
-Rule *rejections* are asserted as well as rule successes — the hearts engine
+Both scoring systems that are easy to get subtly wrong are checked against
+independently written oracles rather than against themselves: the 24 solver
+against an enumeration of operator triples, and spades scoring — contracts,
+nil, bags and the hundred-point roll — exhaustively over every combination a
+hand can produce.
+
+Rule *rejections* are asserted as well as rule successes — the trick engines
 must refuse an off-suit card while the led suit is held, and the expression
-parser must refuse everything that is not arithmetic. Both games run end to end
+parser must refuse everything that is not arithmetic. Every game runs end to end
 against a mocked OpenRouter, including a model that only ever returns garbage,
 to prove the fallback path keeps play moving.
 
@@ -318,7 +367,10 @@ src/
     games/
       blackjack.ts    blackjack engine
       poker/          hold'em engine, 7-card evaluator, win-probability
+      tricks/         what both trick-taking games share: follow-suit legality,
+                      trick resolution with or without trump, dealing
       hearts/         trick engine: passing, legality, trick and hand scoring
+      spades/         partnership engine: bidding, contracts, nil, bags
       twentyfour/     expression parser, exact rationals, brute-force solver
       prompts/        prompt construction and reply parsing, one file per game
       drivers/        one per game: the rules of play, behind a GameDriver

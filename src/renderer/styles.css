@@ -1405,6 +1405,158 @@ button:disabled {
   max-width: 220px;
 }
 
+/* ----------------------------------------------------------------- spades */
+
+/* Everything structural comes from the shared .trick-* block above. What is
+   here is only what Spades adds: the partnership tint, the bid/tricks plate and
+   the two team cards in the middle. */
+
+.felt-spades {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 16px 12px;
+  gap: 8px;
+}
+
+/* Partners sit opposite, so the two tints run north/south against east/west.
+   The compass the table already draws IS the partnership; this only colours
+   it in, and is the only thing telling the operator who is with whom. */
+.sp-seat-team {
+  min-width: 0;
+  max-width: 100%;
+  border-left: 3px solid transparent;
+  padding-left: 6px;
+}
+
+.sp-team-0 { border-left-color: #7cc4ff; }
+.sp-team-1 { border-left-color: #ffc46b; }
+
+.trick-seat-west .sp-seat-team,
+.trick-seat-east .sp-seat-team {
+  border-left: none;
+  border-top: 3px solid transparent;
+  padding-left: 0;
+  padding-top: 4px;
+}
+
+.trick-seat-west .sp-team-1,
+.trick-seat-east .sp-team-1 { border-top-color: #ffc46b; }
+.trick-seat-north .sp-team-0,
+.trick-seat-south .sp-team-0 { border-left-color: #7cc4ff; }
+
+.sp-bid {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.sp-bid-none {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+/* A live nil is the most fragile thing on the table and the biggest single
+   swing in the game, so it is the loudest thing on the plate. */
+.sp-nil {
+  color: #7ee787;
+  background: rgba(126, 231, 135, 0.16);
+  border-radius: 4px;
+  padding: 0 5px;
+  letter-spacing: 0.04em;
+}
+
+.sp-nil-broken {
+  color: #ff9aa2;
+  background: rgba(255, 154, 162, 0.18);
+  border-radius: 4px;
+  padding: 0 5px;
+  text-decoration: line-through;
+}
+
+.sp-tricks {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.sp-dealer-chip {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-weight: 700;
+}
+
+.sp-nil-count {
+  color: #7ee787;
+}
+
+/* The two partnerships, side by side under the trick. Contract against tricks
+   taken is the number the whole hand turns on, so it belongs here rather than
+   in the stats bar with the per-match totals. */
+.sp-teams {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.sp-team {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-left: 3px solid transparent;
+  white-space: nowrap;
+}
+
+.sp-team.sp-team-0 { border-left-color: #7cc4ff; }
+.sp-team.sp-team-1 { border-left-color: #ffc46b; }
+
+.sp-team-leading {
+  background: rgba(126, 231, 135, 0.1);
+}
+
+.sp-team-name {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+.sp-team-score {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+/* `score-lead` is the shared "this side is winning" colour. It is applied to
+   the number each game actually reads, rather than each view writing its own
+   descendant rule off .trick-seat-leader. */
+.sp-team-score.score-lead {
+  color: #7ee787;
+}
+
+.sp-team-contract {
+  color: var(--text-dim);
+}
+
+.sp-team-bags {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+/* Bags are a slow-burning penalty — 100 points at ten — so they get louder as
+   ten approaches rather than only announcing themselves on arrival. */
+.sp-bags-warn {
+  color: #ffd580;
+  font-weight: 700;
+}
+
+.sp-took {
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
 /* ------------------------------------------------------------- 24 puzzle */
 
 .felt-24 {

@@ -1,9 +1,9 @@
 import type { Card, Suit } from './cards.ts'
 
-export type GameKind = 'blackjack' | 'poker' | 'hearts' | 'twentyfour'
+export type GameKind = 'blackjack' | 'poker' | 'hearts' | 'spades' | 'twentyfour'
 
 /** Every game, in the order the setup panel offers them. */
-export const GAME_KINDS: GameKind[] = ['blackjack', 'poker', 'hearts', 'twentyfour']
+export const GAME_KINDS: GameKind[] = ['blackjack', 'poker', 'hearts', 'spades', 'twentyfour']
 
 /**
  * What each game needs at the table. A per-game record rather than a pair of
@@ -29,6 +29,12 @@ export interface GameDescriptor {
   lowestWins: boolean
   /** Every seat answers the same deal at once, so the round has no turns. */
   simultaneous: boolean
+  /**
+   * Fixed partnerships rather than every seat for itself. The UI reads this to
+   * show teams; the interesting consequence is that a model has to infer its
+   * partner's hand from public information, because partners may not talk.
+   */
+  partnership: boolean
 }
 
 export const GAMES: Record<GameKind, GameDescriptor> = {
@@ -40,7 +46,8 @@ export const GAMES: Record<GameKind, GameDescriptor> = {
     roundNoun: 'round',
     fixedRoster: false,
     lowestWins: false,
-    simultaneous: false
+    simultaneous: false,
+    partnership: false
   },
   poker: {
     label: "No-Limit Hold'em",
@@ -50,7 +57,8 @@ export const GAMES: Record<GameKind, GameDescriptor> = {
     roundNoun: 'hand',
     fixedRoster: false,
     lowestWins: false,
-    simultaneous: false
+    simultaneous: false,
+    partnership: false
   },
   hearts: {
     label: 'Hearts',
@@ -60,7 +68,26 @@ export const GAMES: Record<GameKind, GameDescriptor> = {
     roundNoun: 'hand',
     fixedRoster: true,
     lowestWins: true,
-    simultaneous: false
+    simultaneous: false,
+    partnership: false
+  },
+  spades: {
+    label: 'Spades',
+    shortLabel: 'Spades',
+    minPlayers: 4,
+    maxPlayers: 4,
+    roundNoun: 'hand',
+    // Partnerships are positional — seats 0 and 2 against 1 and 3 — which only
+    // works because the seats never move. A join renumbering the table would
+    // silently swap somebody's partner for an opponent mid-match.
+    fixedRoster: true,
+    lowestWins: false,
+    simultaneous: false,
+    // The first game here that is not a free-for-all. Partners cannot legally
+    // say anything to each other, so a seat has to read its partner's holding
+    // out of the bid and the play — a capability axis none of the other four
+    // touch at all.
+    partnership: true
   },
   twentyfour: {
     label: 'The 24 Puzzle',
@@ -73,7 +100,8 @@ export const GAMES: Record<GameKind, GameDescriptor> = {
     fixedRoster: true,
     roundNoun: 'puzzle',
     lowestWins: false,
-    simultaneous: true
+    simultaneous: true,
+    partnership: false
   }
 }
 
@@ -391,6 +419,96 @@ export interface HeartsRules {
   targetScore: number
 }
 
+/* ----------------------------------------------------------------- spades */
+
+export interface SpadesTrick extends TrickBase {}
+
+/**
+ * One seat. Its partner is the seat two to its left, always — partnerships are
+ * positional, which is only safe because the roster is fixed for the match.
+ */
+export interface SpadesPlayer {
+  id: string
+  name: string
+  modelId: string
+  seatIndex: number
+  /** 0 for seats 0 and 2, 1 for seats 1 and 3. */
+  teamIndex: number
+  /**
+   * Cards still held. The spectator sees all four hands; a model's prompt only
+   * ever renders its own — including its partner's, which is the whole point of
+   * the game. Partners may not talk, so a partner's holding has to be inferred.
+   */
+  hand: Card[]
+  /** Tricks this seat contracted for, or null before it has bid. 0 is nil. */
+  bid: number | null
+  /** Tricks taken this hand, and in the hand just scored. */
+  tricksWon: number
+  lastHandTricks: number
+  /** Nil bids made and nil bids brought home, across the match. */
+  nilsBid: number
+  nilsMade: number
+}
+
+/** A partnership. Everything that scores lives here rather than on the seat. */
+export interface SpadesTeam {
+  index: number
+  /** "North–South" / "East–West": the compass positions the felt already draws. */
+  name: string
+  seatIndices: number[]
+  score: number
+  /**
+   * Overtricks carried forward. Every 10 costs 100 points and drops the count
+   * by 10 — the first score in this app that persists *between* hands as a
+   * penalty rather than as a total.
+   */
+  bags: number
+  /** This hand's contract: both partners' bids added up. A nil adds nothing. */
+  contract: number
+  tricksWon: number
+  lastHandDelta: number
+}
+
+export interface SpadesState {
+  kind: 'spades'
+  phase: 'idle' | 'bidding' | 'playing' | 'handComplete' | 'complete'
+  handNumber: number
+  handsPlayed: number
+  players: SpadesPlayer[]
+  /** Exactly two, indexed by `teamIndex`. */
+  teams: SpadesTeam[]
+  /** Rotates one seat left each hand; the seat to its left leads trick one. */
+  dealerIndex: number
+  /** Seat owed a bid, or -1 once every seat has bid. */
+  biddingSeatIndex: number
+  currentTrick: SpadesTrick | null
+  /** Kept on the felt after it is gathered, so the operator can read it. */
+  lastTrick: SpadesTrick | null
+  /** 1-based; 13 tricks to a hand, always. */
+  trickNumber: number
+  leadSeatIndex: number
+  /** Seat whose turn it is, or -1 between plays. */
+  actingSeatIndex: number
+  /** A spade has been played, so spades may now be led. */
+  spadesBroken: boolean
+  lastHandSummary?: string
+  winnerName?: string
+  /** Plays made without asking a model, because only one card was legal. */
+  forcedPlays: number
+  /** Total plays made, forced ones included, for the forced-play rate. */
+  totalPlays: number
+}
+
+export interface SpadesRules {
+  /** The match ends once a partnership reaches this. Traditionally 500. */
+  targetScore: number
+  /**
+   * A partnership this far under loses immediately; 0 disables the floor. It
+   * exists to stop a hopeless match grinding on at four API calls a trick.
+   */
+  bustScore: number
+}
+
 /* ------------------------------------------------------------ 24 puzzle */
 
 export type TwentyFourVerdict =
@@ -496,6 +614,7 @@ export interface MatchSettings {
   blackjack: BlackjackRules
   poker: PokerRules
   hearts: HeartsRules
+  spades: SpadesRules
   twentyfour: TwentyFourRules
   /** Milliseconds to pause between visible steps so a human can follow along. */
   stepDelayMs: number
@@ -557,7 +676,12 @@ export type MatchStatus = 'idle' | 'running' | 'paused' | 'stopping' | 'finished
  * optional fields where exactly one is ever set — and nothing in the type
  * stopped a caller reading the wrong one.
  */
-export type TableState = BlackjackState | PokerState | HeartsState | TwentyFourState
+export type TableState =
+  | BlackjackState
+  | PokerState
+  | HeartsState
+  | SpadesState
+  | TwentyFourState
 
 export interface MatchSnapshot {
   status: MatchStatus
@@ -621,6 +745,11 @@ export const DEFAULT_HEARTS_RULES: HeartsRules = {
   targetScore: 100
 }
 
+export const DEFAULT_SPADES_RULES: SpadesRules = {
+  targetScore: 500,
+  bustScore: -200
+}
+
 export const DEFAULT_TWENTYFOUR_RULES: TwentyFourRules = {
   targetScore: 10
 }
@@ -633,6 +762,7 @@ export function defaultSettings(): MatchSettings {
     blackjack: { ...DEFAULT_BLACKJACK_RULES },
     poker: { ...DEFAULT_POKER_RULES },
     hearts: { ...DEFAULT_HEARTS_RULES },
+    spades: { ...DEFAULT_SPADES_RULES },
     twentyfour: { ...DEFAULT_TWENTYFOUR_RULES },
     stepDelayMs: 900,
     showEquity: true,

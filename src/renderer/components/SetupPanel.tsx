@@ -43,6 +43,9 @@ const GAME_BLURB: Record<GameKind, (settings: MatchSettings) => string> = {
   hearts: () =>
     'Exactly four models pass three cards and play thirteen tricks, dodging hearts and ' +
     'the queen of spades. Lowest score wins.',
+  spades: () =>
+    'Exactly four models in two fixed partnerships, bidding tricks and playing them out. ' +
+    'Partners sit opposite and cannot talk, so each has to read the other from the bids.',
   twentyfour: (s) =>
     `Up to ${GAMES.twentyfour.maxPlayers} models race the same four cards to 24, all answering at once. ` +
     `First correct answer takes the ${GAMES.twentyfour.roundNoun}.`
@@ -288,6 +291,12 @@ function describeReadiness(
   }
   if (settings.game === 'hearts' && settings.hearts.targetScore < 25) {
     return 'A game of hearts needs a target of at least 25 points.'
+  }
+  if (settings.game === 'spades' && settings.spades.targetScore < 100) {
+    return 'A game of spades needs a target of at least 100 points.'
+  }
+  if (settings.game === 'spades' && settings.spades.bustScore > 0) {
+    return 'The spades floor is a penalty, so it cannot be above zero.'
   }
   return ''
 }
