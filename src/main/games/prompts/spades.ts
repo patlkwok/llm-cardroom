@@ -54,8 +54,18 @@ export function spadesSystemPrompt(rules: SpadesRules): string {
     '- **A bid of 0 is a NIL bid**: a promise to take NO tricks at all this hand.',
     '  Bringing it home is +100 to your partnership. Taking even one trick is −100.',
     '- A nil adds nothing to the contract, so your partner\'s bid has to stand alone.',
-    '- **A trick a nil bidder takes still counts towards the partnership\'s contract**',
-    '  as well as breaking the nil.',
+    // Whichever of the two is actually in force. A model told the wrong one
+    // misprices every nil at the table, and this is the setting most likely to
+    // be flipped, so it is generated rather than written once.
+    rules.nilTricksCountToContract
+      ? '- **A trick a nil bidder takes still counts towards the partnership\'s contract**\n' +
+        '  as well as breaking the nil.'
+      : '- **A trick a nil bidder takes does NOT count towards the contract** — it only\n' +
+        '  breaks the nil and becomes a bag. Your partner\'s bid must be made unaided.',
+    '- **DOUBLE NIL: if BOTH partners bid nil, it is scored as one thing, not two.**',
+    '  Both of you bringing it home is +400 — the pair\'s nil bonuses doubled. If either',
+    '  of you takes a trick there is no nil penalty at all, but your contract is then 0,',
+    '  so every trick the two of you took is a bag.',
     '- If your hand is weak but you cannot honestly promise zero tricks, bid 1, not 0.',
     '- Blind nil is not offered at this table.',
     '',
@@ -135,7 +145,9 @@ export function buildSpadesBidPrompt(
       `Your partner ${partner.name} bid ${partner.bid === 0 ? 'NIL' : partner.bid}. ` +
         (partner.bid === 0
           ? 'They are trying to take nothing at all — the contract rests entirely on your bid, ' +
-            'and you will want high cards to cover them.'
+            'and you will want high cards to cover them. Bidding 0 yourself would make it a ' +
+            'DOUBLE NIL: +400 if you both bring it home, no nil penalty if either of you does ' +
+            'not, but then a contract of 0 and every trick you take between you is a bag.'
           : `Your bid is added to theirs, so bidding N makes the contract ${partner.bid} + N.`)
     )
   }

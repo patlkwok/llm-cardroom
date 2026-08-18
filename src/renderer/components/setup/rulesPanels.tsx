@@ -210,10 +210,26 @@ function SpadesRules({ settings, patch, locked }: RulesPanelProps): React.JSX.El
         loses 10 a trick, and <strong>every 10 overtricks costs 100 points</strong>{' '}
         — so bags punish sandbagging a hand or two later.
       </p>
+      <Toggle
+        label="Nil tricks count towards the contract"
+        checked={spades.nilTricksCountToContract}
+        disabled={locked}
+        onChange={(nilTricksCountToContract) =>
+          patch({ spades: { ...spades, nilTricksCountToContract } })
+        }
+      />
       <p className="panel-hint">
-        A bid of 0 is <strong>nil</strong>: ±100 on its own, and a trick the nil
-        bidder is forced to take still counts towards the partner's contract.
-        Blind nil is not offered.
+        A bid of 0 is <strong>nil</strong>: ±100 on its own. Both partners
+        bidding nil is a <strong>double nil</strong>, scored as one thing rather
+        than two — +400 if they both bring it home, and no nil penalty at all if
+        either fails, though the contract is then 0 so every trick they took is
+        a bag. Blind nil is not offered.
+      </p>
+      <p className="panel-hint">
+        Turning the toggle off is the harsher house rule: a trick the nil bidder
+        is forced to take becomes a bag but does <em>not</em> help the partner's
+        contract, so the partner's bid has to be made unaided. Whichever is set
+        is stated in the system prompt, so no model has to guess.
       </p>
       <p className="panel-hint">
         Exactly four models, fixed for the match — partnerships are positional,

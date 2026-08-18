@@ -3,6 +3,7 @@ import { GAMES } from '../../../shared/types.ts'
 import type { MatchSettings, SpadesState, SpadesTrick } from '../../../shared/types.ts'
 import type { DriverContext, GameDriver } from '../driver.ts'
 import {
+  NIL_VALUE,
   SpadesTable,
   SPADES_SEATS,
   suggestedBid,
@@ -123,9 +124,18 @@ export class SpadesDriver implements GameDriver {
         // the hand turns.
         const brokeNil = winnerSeat !== undefined && winnerSeat.bid === 0
         if (brokeNil && winnerSeat) {
+          // What it costs depends on whether the partner is also on nil: a
+          // broken half of a double nil carries no nil penalty at all, it just
+          // takes the +400 off the table. Naming a flat 100 there would be a
+          // straightforwardly false number on the felt.
+          const partnerOnNil = table.partnerOf(winnerSeat.seatIndex).bid === 0
           ctx.log(
             'result',
-            `${winnerSeat.name}'s NIL is broken — that trick costs ${team?.name} 100 points.`,
+            partnerOnNil
+              ? `${winnerSeat.name}'s NIL is broken — the double nil is off, so ${team?.name} ` +
+                'loses the 400 rather than taking a penalty.'
+              : `${winnerSeat.name}'s NIL is broken — that trick costs ${team?.name} ` +
+                `${NIL_VALUE} points.`,
             winnerSeat.id
           )
         }
@@ -156,14 +166,37 @@ export class SpadesDriver implements GameDriver {
             : `SET, ${scored.contractPoints}`) +
           '.'
       )
-      for (const nil of scored.nils) {
+      // A double nil is one result, not two. Reporting it seat by seat would
+      // print "+100" twice for something worth +400, and "−100" for something
+      // that carries no nil penalty at all — the label has to name whatever
+      // actually decided the number.
+      if (scored.doubleNil) {
+        const who = scored.nils.map((n) => n.name).join(' and ')
+        const broke = scored.nils.filter((n) => !n.made)
+        // Naming the seats twice when both of them broke read as a stutter —
+        // "X and Y both bid nil and X and Y took a trick". Say which case it is
+        // instead.
+        const blame =
+          broke.length === scored.nils.length
+            ? 'both took tricks'
+            : `${broke.map((n) => n.name).join(' and ')} took a trick`
         ctx.log(
           'result',
-          nil.made
-            ? `${nil.name} brought the nil home — +100.`
-            : `${nil.name} failed the nil — −100.`,
-          table.state.players[nil.seatIndex].id
+          broke.length === 0
+            ? `DOUBLE NIL: ${who} both took nothing — +${scored.nilPoints}.`
+            : `${who} both bid nil and ${blame} — no nil penalty, but the contract ` +
+              'was 0 so every trick they took is a bag.'
         )
+      } else {
+        for (const nil of scored.nils) {
+          ctx.log(
+            'result',
+            nil.made
+              ? `${nil.name} brought the nil home — +${NIL_VALUE}.`
+              : `${nil.name} failed the nil — −${NIL_VALUE}.`,
+            table.state.players[nil.seatIndex].id
+          )
+        }
       }
       if (scored.bagPenalty < 0) {
         ctx.log(

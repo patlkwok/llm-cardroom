@@ -4,6 +4,8 @@ import { cardCode, sameCard, type Card } from '../src/shared/cards.ts'
 import {
   BAGS_PER_PENALTY,
   CARDS_PER_HAND,
+  DOUBLE_NIL_VALUE,
+  NIL_VALUE,
   scoreTeam,
   SpadesTable,
   SPADES_SEATS,
@@ -360,18 +362,19 @@ test('the fallback bid is never nil', () => {
 /* ----------------------------------------------------------------- scoring */
 
 test('scoring a hand matches an independently written table of cases', () => {
-  // Written from the rules as stated in the system prompt, not from the code.
+  // Written from the rules as stated in the system prompt, not read back out of
+  // the code. Every entry names its arithmetic so a wrong expectation is
+  // visible rather than authoritative-looking.
+  const base = { nilTricks: 0, nilTricksCountToContract: true }
   const cases: Array<[string, Parameters<typeof scoreTeam>[0], number]> = [
-    ['made exactly', { contract: 4, tricksWon: 4, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, 40],
-    ['made with two bags', { contract: 4, tricksWon: 6, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, 42],
-    ['set by one', { contract: 4, tricksWon: 3, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, -40],
-    ['set badly', { contract: 9, tricksWon: 2, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, -90],
-    ['nil made alongside a made contract', { contract: 3, tricksWon: 4, bagsBefore: 0, nilsMade: 1, nilsFailed: 0 }, 30 + 1 + 100],
-    ['nil failed alongside a made contract', { contract: 3, tricksWon: 5, bagsBefore: 0, nilsMade: 0, nilsFailed: 1 }, 30 + 2 - 100],
-    ['both partners nil, both home', { contract: 0, tricksWon: 0, bagsBefore: 0, nilsMade: 2, nilsFailed: 0 }, 200],
-    ['both partners nil, both broken', { contract: 0, tricksWon: 3, bagsBefore: 0, nilsMade: 0, nilsFailed: 2 }, 3 - 200],
-    ['the tenth bag costs a hundred', { contract: 4, tricksWon: 6, bagsBefore: 8, nilsMade: 0, nilsFailed: 0 }, 40 + 2 - 100],
-    ['a set partnership takes no bags at all', { contract: 5, tricksWon: 4, bagsBefore: 9, nilsMade: 0, nilsFailed: 0 }, -50]
+    ['made exactly', { ...base, contract: 4, tricksWon: 4, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, 40],
+    ['made with two bags', { ...base, contract: 4, tricksWon: 6, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, 42],
+    ['set by one', { ...base, contract: 4, tricksWon: 3, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, -40],
+    ['set badly', { ...base, contract: 9, tricksWon: 2, bagsBefore: 0, nilsMade: 0, nilsFailed: 0 }, -90],
+    ['nil made alongside a made contract', { ...base, contract: 3, tricksWon: 4, bagsBefore: 0, nilsMade: 1, nilsFailed: 0 }, 30 + 1 + 100],
+    ['nil failed alongside a made contract', { ...base, contract: 3, tricksWon: 5, nilTricks: 1, bagsBefore: 0, nilsMade: 0, nilsFailed: 1 }, 30 + 2 - 100],
+    ['the tenth bag costs a hundred', { ...base, contract: 4, tricksWon: 6, bagsBefore: 8, nilsMade: 0, nilsFailed: 0 }, 40 + 2 - 100],
+    ['a set partnership takes no bags at all', { ...base, contract: 5, tricksWon: 4, bagsBefore: 9, nilsMade: 0, nilsFailed: 0 }, -50]
   ]
 
   for (const [label, input, expected] of cases) {
@@ -379,19 +382,83 @@ test('scoring a hand matches an independently written table of cases', () => {
   }
 
   // And the bag counter itself rolls rather than resetting.
-  assert.equal(scoreTeam({ contract: 4, tricksWon: 6, bagsBefore: 8, nilsMade: 0, nilsFailed: 0 }).bagsAfter, 0)
-  assert.equal(scoreTeam({ contract: 4, tricksWon: 7, bagsBefore: 8, nilsMade: 0, nilsFailed: 0 }).bagsAfter, 1)
-  assert.equal(scoreTeam({ contract: 5, tricksWon: 4, bagsBefore: 9, nilsMade: 0, nilsFailed: 0 }).bagsAfter, 9)
+  assert.equal(scoreTeam({ ...base, contract: 4, tricksWon: 6, bagsBefore: 8, nilsMade: 0, nilsFailed: 0 }).bagsAfter, 0)
+  assert.equal(scoreTeam({ ...base, contract: 4, tricksWon: 7, bagsBefore: 8, nilsMade: 0, nilsFailed: 0 }).bagsAfter, 1)
+  assert.equal(scoreTeam({ ...base, contract: 5, tricksWon: 4, bagsBefore: 9, nilsMade: 0, nilsFailed: 0 }).bagsAfter, 9)
+})
+
+test('double nil is scored as one thing, not as two independent nils', () => {
+  // The rule this engine had wrong first time round. Both partners on nil is
+  // its own result: the pair's nil bonuses **doubled** if they both bring it
+  // home, and **no nil penalty at all** if either fails. Scoring it as two
+  // separate nils gives 200 and −200 instead of 400 and 0, and — the subtler
+  // half — makes a mixed result come to 0 by two halves cancelling rather than
+  // by rule.
+  const base = { nilTricksCountToContract: true, bagsBefore: 0 }
+
+  const bothHome = scoreTeam({ ...base, contract: 0, tricksWon: 0, nilTricks: 0, nilsMade: 2, nilsFailed: 0 })
+  assert.equal(bothHome.doubleNil, true)
+  assert.equal(bothHome.nilPoints, DOUBLE_NIL_VALUE)
+  assert.equal(bothHome.delta, 400, 'both nils home is the doubled bonus, not 100 + 100')
+
+  // Either failing kills the bonus and carries no penalty — but the contract is
+  // 0, so every trick the pair took is a bag. That is the whole cost.
+  const oneBroke = scoreTeam({ ...base, contract: 0, tricksWon: 3, nilTricks: 3, nilsMade: 1, nilsFailed: 1 })
+  assert.equal(oneBroke.nilPoints, 0, 'no nil penalty when a double nil breaks')
+  assert.equal(oneBroke.bagsGained, 3, 'but the tricks are all bags')
+  assert.equal(oneBroke.delta, 3)
+
+  const bothBroke = scoreTeam({ ...base, contract: 0, tricksWon: 5, nilTricks: 5, nilsMade: 0, nilsFailed: 2 })
+  assert.equal(bothBroke.nilPoints, 0, 'still no penalty when both break')
+  assert.equal(bothBroke.delta, 5)
+
+  // A single nil is untouched by any of this.
+  const single = scoreTeam({ ...base, contract: 4, tricksWon: 4, nilTricks: 0, nilsMade: 1, nilsFailed: 0 })
+  assert.equal(single.doubleNil, false)
+  assert.equal(single.nilPoints, NIL_VALUE)
+})
+
+test('the nil-tricks rule changes whether a contract is made', () => {
+  // The setting, and the case that separates the two readings: the partnership
+  // bid 3 and took 3, but one of those was taken by the nil bidder. Counting it
+  // makes the contract; not counting it sets them.
+  const base = { contract: 3, tricksWon: 3, nilTricks: 1, bagsBefore: 0, nilsMade: 0, nilsFailed: 1 }
+
+  const counting = scoreTeam({ ...base, nilTricksCountToContract: true })
+  assert.equal(counting.made, true)
+  assert.equal(counting.contractPoints, 30)
+  assert.equal(counting.delta, 30 - 100, 'contract made, nil broken')
+
+  const notCounting = scoreTeam({ ...base, nilTricksCountToContract: false })
+  assert.equal(notCounting.made, false, 'two tricks against a contract of three is set')
+  assert.equal(notCounting.contractPoints, -30)
+  assert.equal(notCounting.bagsGained, 0, 'and a set partnership takes no bags')
+  assert.equal(notCounting.delta, -30 - 100)
+
+  // With the nil brought home the two readings cannot disagree: nilTricks is 0,
+  // so there is nothing to exclude.
+  for (const flag of [true, false]) {
+    const clean = scoreTeam({
+      contract: 3, tricksWon: 4, nilTricks: 0, bagsBefore: 0,
+      nilsMade: 1, nilsFailed: 0, nilTricksCountToContract: flag
+    })
+    assert.equal(clean.delta, 30 + 1 + 100)
+  }
 })
 
 test('scoring agrees with an independent implementation over the whole space', () => {
   // The oracle is written from the rules again rather than refactored out of
   // the engine — the same trick the 24 solver's oracle uses. Exhaustive over
-  // every combination a hand can actually produce.
-  function oracle(contract: number, tricks: number, bagsBefore: number, made: number, failed: number) {
+  // every combination a hand can actually produce, under both readings of the
+  // nil-tricks rule.
+  function oracle(
+    contract: number, tricks: number, nilTricks: number, bagsBefore: number,
+    made: number, failed: number, nilTricksCount: boolean
+  ) {
     let delta = 0
     let bags = bagsBefore
-    if (tricks >= contract) {
+    const towardsContract = nilTricksCount ? tricks : tricks - nilTricks
+    if (towardsContract >= contract) {
       delta += contract * 10
       const over = tricks - contract
       delta += over
@@ -403,8 +470,9 @@ test('scoring agrees with an independent implementation over the whole space', (
     } else {
       delta -= contract * 10
     }
-    delta += made * 100
-    delta -= failed * 100
+    // Double nil is a unit; anything else is scored per nil.
+    if (made + failed === 2) delta += failed === 0 ? 400 : 0
+    else delta += made * 100 - failed * 100
     return { delta, bags }
   }
 
@@ -413,16 +481,26 @@ test('scoring agrees with an independent implementation over the whole space', (
     for (let tricks = 0; tricks <= TRICKS_PER_HAND; tricks++) {
       for (let bagsBefore = 0; bagsBefore < BAGS_PER_PENALTY; bagsBefore++) {
         for (const [nilsMade, nilsFailed] of [[0, 0], [1, 0], [0, 1], [2, 0], [1, 1], [0, 2]]) {
-          const got = scoreTeam({ contract, tricksWon: tricks, bagsBefore, nilsMade, nilsFailed })
-          const want = oracle(contract, tricks, bagsBefore, nilsMade, nilsFailed)
-          assert.equal(got.delta, want.delta, `${contract}/${tricks}/${bagsBefore}`)
-          assert.equal(got.bagsAfter, want.bags, `${contract}/${tricks}/${bagsBefore} bags`)
-          checked++
+          // A seat that made its nil took no tricks, so only the failed ones can
+          // contribute — and never more than the partnership took in total.
+          const nilTricks = Math.min(tricks, nilsFailed)
+          for (const nilTricksCountToContract of [true, false]) {
+            const got = scoreTeam({
+              contract, tricksWon: tricks, nilTricks, bagsBefore,
+              nilsMade, nilsFailed, nilTricksCountToContract
+            })
+            const want = oracle(
+              contract, tricks, nilTricks, bagsBefore, nilsMade, nilsFailed, nilTricksCountToContract
+            )
+            assert.equal(got.delta, want.delta, `${contract}/${tricks}/${bagsBefore}/${nilTricksCountToContract}`)
+            assert.equal(got.bagsAfter, want.bags, `${contract}/${tricks}/${bagsBefore} bags`)
+            checked++
+          }
         }
       }
     }
   }
-  assert.equal(checked, 14 * 14 * 10 * 6)
+  assert.equal(checked, 14 * 14 * 10 * 6 * 2)
 })
 
 test('a nil bidder’s trick breaks the nil and still counts towards the contract', () => {
@@ -462,7 +540,7 @@ test('a nil bidder’s trick breaks the nil and still counts towards the contrac
 test('a partnership score is exactly the sum of its hand deltas', () => {
   // The Spades analogue of bankroll accounting: the running total and the
   // per-hand reports cannot disagree.
-  const table = newTable({ targetScore: 100000, bustScore: 0 })
+  const table = newTable({ targetScore: 100000, bustScore: 0, nilTricksCountToContract: true })
   const totals = [0, 0]
   for (let hand = 0; hand < 12; hand++) {
     table.startHand()
@@ -479,26 +557,26 @@ test('a partnership score is exactly the sum of its hand deltas', () => {
 /* -------------------------------------------------------------- the match */
 
 test('the match ends when a partnership reaches the target, or falls through the floor', () => {
-  const high = newTable({ targetScore: 200, bustScore: -200 })
+  const high = newTable({ targetScore: 200, bustScore: -200, nilTricksCountToContract: true })
   assert.equal(high.isMatchOver, false)
   high.state.teams[0].score = 200
   assert.equal(high.isMatchOver, true)
   assert.equal(high.winnerName, 'North–South')
 
-  const low = newTable({ targetScore: 500, bustScore: -200 })
+  const low = newTable({ targetScore: 500, bustScore: -200, nilTricksCountToContract: true })
   low.state.teams[1].score = -200
   assert.equal(low.isMatchOver, true)
   // The floor ends the match; the *other* partnership wins it, however little
   // it has scored. Reading the loser's total as the result would be the bug.
   assert.equal(low.winnerName, 'North–South')
 
-  const noFloor = newTable({ targetScore: 500, bustScore: 0 })
+  const noFloor = newTable({ targetScore: 500, bustScore: 0, nilTricksCountToContract: true })
   noFloor.state.teams[1].score = -900
   assert.equal(noFloor.isMatchOver, false, 'a floor of 0 disables it')
 })
 
 test('both partnerships level past the target is not a win', () => {
-  const table = newTable({ targetScore: 200, bustScore: 0 })
+  const table = newTable({ targetScore: 200, bustScore: 0, nilTricksCountToContract: true })
   table.state.teams[0].score = 210
   table.state.teams[1].score = 210
   assert.equal(table.isMatchOver, true)
@@ -531,7 +609,7 @@ test('forced plays are common enough to be worth skipping the model call for', (
   // The same measurement Hearts carries, and the same reason: it is how much of
   // a trick-taking match comes free. Hearts runs 23.7–25.0%; Spades has no
   // first-trick rule and a trump suit, so the figure is its own.
-  const table = newTable({ targetScore: 100000, bustScore: 0 })
+  const table = newTable({ targetScore: 100000, bustScore: 0, nilTricksCountToContract: true })
   let forced = 0
   let total = 0
 

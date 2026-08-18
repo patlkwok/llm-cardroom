@@ -2658,6 +2658,41 @@ test('the pinned spades rules are stated in force, not left to be inferred', asy
     assert.match(system, /10 bags your partnership collects costs it 100 points/i)
     assert.match(system, /still counts towards the partnership's contract/i)
     assert.match(system, /set partnership takes no bags at all/i)
+    // Double nil is scored as a unit, not as two nils, and the difference is
+    // large enough that a model told the wrong thing misprices the bid badly.
+    assert.match(system, /DOUBLE NIL: if BOTH partners bid nil/i)
+    assert.match(system, /\+400/)
+  }
+})
+
+test('the nil-tricks setting is stated in the prompt, whichever way it is set', async () => {
+  // The whole point of making it a setting rather than a decision: a model
+  // handed the wrong rule misprices every nil at the table. So the prompt is
+  // generated from the setting rather than written once, and both readings are
+  // asserted — a hardcoded line would pass one of these and fail the other.
+  for (const nilTricksCountToContract of [true, false]) {
+    const sink = capture()
+    mockOpenRouter(respondSpades, sink)
+
+    await new MatchRunner(
+      spadesSettings({
+        maxRounds: 1,
+        spades: { ...defaultSettings().spades, nilTricksCountToContract }
+      }),
+      'test-key',
+      sink.emit
+    ).run()
+
+    assert.ok(sink.systemPrompts.length > 0)
+    for (const system of sink.systemPrompts) {
+      if (nilTricksCountToContract) {
+        assert.match(system, /still counts towards the partnership's contract/i)
+        assert.doesNotMatch(system, /does NOT count towards the contract/i)
+      } else {
+        assert.match(system, /does NOT count towards the contract/i)
+        assert.doesNotMatch(system, /still counts towards the partnership's contract/i)
+      }
+    }
   }
 })
 

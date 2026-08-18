@@ -297,7 +297,16 @@ rather than as a total, so sandbagging a hand is paid for several hands later.
 A bid of **0 is nil**: a promise to take no tricks, worth ±100 on its own. It
 adds nothing to the contract, so the partner's bid has to stand unaided, and a
 trick a nil bidder is forced to take both breaks the nil *and* counts towards
-the contract. Blind nil is not offered.
+the contract — that last part is a **setting**, because tables genuinely play it
+both ways, and whichever is in force is stated in the system prompt so no model
+has to guess.
+
+**Both partners bidding nil is a double nil, and it is scored as one thing
+rather than two.** Bringing it home doubles the pair's nil bonuses, for +400;
+if either of them takes a trick there is no nil penalty at all — but the
+contract is then 0, so every trick the two of them took is a bag. Scoring it as
+two independent nils would give +200 and −200, which is wrong in both
+directions. Blind nil is not offered.
 
 Spades is genuinely less standardised than Hearts — how a nil bidder's tricks
 are counted, whether a set partnership keeps its bags, and what ten bags costs
@@ -338,7 +347,7 @@ match sorts the board into final standings.
 npm test
 ```
 
-254 tests. The load-bearing ones are invariants rather than examples: chip
+257 tests. The load-bearing ones are invariants rather than examples: chip
 conservation across randomised poker hands and repeated roster churn, per-seat
 bankroll accounting at blackjack, card conservation on the shoe, 52 cards and
 exactly 26 points conserved through every hearts hand, all thirteen tricks

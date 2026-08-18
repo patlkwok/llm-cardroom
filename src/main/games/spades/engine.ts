@@ -26,6 +26,12 @@ export const BAGS_PER_PENALTY = 10
 export const BAG_PENALTY = 100
 /** Bringing a nil home, or failing it. Symmetrical, and it is the big swing. */
 export const NIL_VALUE = 100
+/**
+ * Both partners bidding nil and both bringing it home: the pair's nil bonuses
+ * are doubled, so 2 x 100 doubled. Double nil is scored as one thing rather
+ * than as two independent nils — see `scoreTeam`.
+ */
+export const DOUBLE_NIL_VALUE = 400
 
 export interface SpadesSeed {
   id: string
@@ -45,11 +51,17 @@ export interface SpadesSeed {
  *   would swap somebody's partner for an opponent halfway through.
  * - A bid of **0 is nil**, worth ±100 to the partnership on its own. Blind nil
  *   is not offered, the way surrender is not offered at blackjack.
- * - **A team's tricks all count together**, the nil bidder's included. So a
- *   trick a nil bidder is forced to take breaks the nil *and* counts towards
- *   the partner's contract. This is the widely played version and it is the one
- *   that keeps `team0.tricksWon + team1.tricksWon === 13` true, which is the
- *   conservation invariant this engine is tested against.
+ * - **Double nil — both partners on nil — is scored as one thing, not two.**
+ *   Both bringing it home doubles the pair's nil bonuses (400); either of them
+ *   failing carries no nil penalty at all. Scoring it as two independent nils
+ *   is wrong in both directions, and was wrong here at first.
+ * - **A team's tricks all count together by default**, the nil bidder's
+ *   included, so a trick a nil bidder is forced to take breaks the nil *and*
+ *   counts towards the partner's contract. `nilTricksCountToContract` turns
+ *   that off for tables that play the harsher house rule. Either way every
+ *   trick belongs to a partnership, so `team0.tricksWon + team1.tricksWon
+ *   === 13` holds — that is the conservation invariant this engine is tested
+ *   against, and it is deliberately independent of the setting.
  * - Making the contract scores 10 a trick plus **1 per overtrick (a bag)**;
  *   failing scores −10 a trick and no bags at all.
  * - Ten accumulated bags cost 100 points and drop the count by ten. Bags are
@@ -416,9 +428,14 @@ export class SpadesTable {
       const result = scoreTeam({
         contract: team.contract,
         tricksWon: team.tricksWon,
+        nilTricks: team.seatIndices
+          .map((i) => s.players[i])
+          .filter((p) => p.bid === 0)
+          .reduce((sum, p) => sum + p.tricksWon, 0),
         bagsBefore: team.bags,
         nilsMade: nils.filter((n) => n.made).length,
-        nilsFailed: nils.filter((n) => !n.made).length
+        nilsFailed: nils.filter((n) => !n.made).length,
+        nilTricksCountToContract: this.rules.nilTricksCountToContract
       })
 
       team.score += result.delta
@@ -451,10 +468,18 @@ export class SpadesTable {
 
 export interface SpadesTeamScoreInput {
   contract: number
+  /** Every trick the partnership took, the nil bidders' included. */
   tricksWon: number
+  /** Of those, the ones taken by a seat that bid nil. */
+  nilTricks: number
   bagsBefore: number
   nilsMade: number
   nilsFailed: number
+  /**
+   * Whether `nilTricks` count towards the contract. See `SpadesRules`; false is
+   * the house rule where a nil bidder's tricks become bags only.
+   */
+  nilTricksCountToContract: boolean
 }
 
 export interface SpadesTeamScore {
@@ -467,6 +492,8 @@ export interface SpadesTeamScore {
   nilPoints: number
   bagsAfter: number
   made: boolean
+  /** Both partners bid nil, so the nil half was scored as a single unit. */
+  doubleNil: boolean
   delta: number
 }
 
@@ -483,8 +510,21 @@ export interface SpadesHandScore extends SpadesTeamScore {
  * independently written oracle rather than against thirteen played tricks.
  */
 export function scoreTeam(input: SpadesTeamScoreInput): SpadesTeamScore {
-  const { contract, tricksWon, bagsBefore, nilsMade, nilsFailed } = input
-  const made = tricksWon >= contract
+  const {
+    contract,
+    tricksWon,
+    nilTricks,
+    bagsBefore,
+    nilsMade,
+    nilsFailed,
+    nilTricksCountToContract
+  } = input
+
+  // Under the house rule a nil bidder's tricks are worth nothing to the
+  // contract — the partner's bid has to be made unaided — but they are still
+  // the partnership's tricks, so they still become bags.
+  const contractTricks = nilTricksCountToContract ? tricksWon : tricksWon - nilTricks
+  const made = contractTricks >= contract
 
   const contractPoints = made ? contract * 10 : contract * -10
   // A set partnership takes no bags at all — the overtricks it did take are
@@ -496,7 +536,19 @@ export function scoreTeam(input: SpadesTeamScoreInput): SpadesTeamScore {
   const bagPenalty = -penalties * BAG_PENALTY
   const bagsAfter = bagsTotal - penalties * BAGS_PER_PENALTY
 
-  const nilPoints = (nilsMade - nilsFailed) * NIL_VALUE
+  // **Double nil is scored as one thing, not as two nils.** Both partners
+  // bidding nil doubles the pair's nil bonuses if they both bring it home, and
+  // carries no penalty at all if either fails — which is not the same as
+  // +100/−100 each, and in particular a mixed result is 0 by rule rather than
+  // by two halves cancelling. The failed case is not free even so: the
+  // contract is 0, so every trick the pair took is a bag.
+  const nils = nilsMade + nilsFailed
+  const nilPoints =
+    nils === SPADES_SEATS / 2
+      ? nilsFailed === 0
+        ? DOUBLE_NIL_VALUE
+        : 0
+      : (nilsMade - nilsFailed) * NIL_VALUE
 
   return {
     contractPoints,
@@ -505,6 +557,7 @@ export function scoreTeam(input: SpadesTeamScoreInput): SpadesTeamScore {
     nilPoints,
     bagsAfter,
     made,
+    doubleNil: nils === SPADES_SEATS / 2,
     delta: contractPoints + bagsGained + bagPenalty + nilPoints
   }
 }

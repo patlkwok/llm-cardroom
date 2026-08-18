@@ -507,6 +507,17 @@ export interface SpadesRules {
    * exists to stop a hopeless match grinding on at four API calls a trick.
    */
   bustScore: number
+  /**
+   * Whether a trick taken by a nil bidder counts towards their partner's
+   * contract as well as breaking the nil.
+   *
+   * True is the core rule and the default. False is the house rule where the
+   * nil bidder's tricks become bags only, so the partner's bid has to be made
+   * unaided — which makes nil considerably riskier. It is a setting rather
+   * than a decision because tables really do play both, and whichever is in
+   * force is stated in the system prompt so no model has to guess.
+   */
+  nilTricksCountToContract: boolean
 }
 
 /* ------------------------------------------------------------ 24 puzzle */
@@ -747,7 +758,8 @@ export const DEFAULT_HEARTS_RULES: HeartsRules = {
 
 export const DEFAULT_SPADES_RULES: SpadesRules = {
   targetScore: 500,
-  bustScore: -200
+  bustScore: -200,
+  nilTricksCountToContract: true
 }
 
 export const DEFAULT_TWENTYFOUR_RULES: TwentyFourRules = {
