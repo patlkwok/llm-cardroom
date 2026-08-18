@@ -210,20 +210,12 @@ function SpadesRules({ settings, patch, locked }: RulesPanelProps): React.JSX.El
         loses 10 a trick, and <strong>every 10 overtricks costs 100 points</strong>{' '}
         — so bags punish sandbagging a hand or two later.
       </p>
-      <Toggle
-        label="Nil tricks count towards the contract"
-        checked={spades.nilTricksCountToContract}
-        disabled={locked}
-        onChange={(nilTricksCountToContract) =>
-          patch({ spades: { ...spades, nilTricksCountToContract } })
-        }
-      />
       <p className="panel-hint">
         A bid of 0 is <strong>nil</strong>: ±100 on its own. Both partners
         bidding nil is a <strong>double nil</strong>, scored as one thing rather
         than two — +400 if they both bring it home, and no nil penalty at all if
         either fails, though the contract is then 0 so every trick they took is
-        a bag. Blind nil is not offered.
+        a bag.
       </p>
       <Toggle
         label="Offer blind nil"
@@ -238,9 +230,17 @@ function SpadesRules({ settings, patch, locked }: RulesPanelProps): React.JSX.El
         bring it home. Nobody qualifies in the first hand, since the scores
         start level. A model that cannot answer always declines.
       </p>
+      <Toggle
+        label="Nil tricks count towards the contract"
+        checked={spades.nilTricksCountToContract}
+        disabled={locked}
+        onChange={(nilTricksCountToContract) =>
+          patch({ spades: { ...spades, nilTricksCountToContract } })
+        }
+      />
       <p className="panel-hint">
-        Turning the nil-tricks toggle off is the harsher house rule: a trick the nil bidder
-        is forced to take becomes a bag but does <em>not</em> help the partner's
+        Turning that off is the harsher house rule: a trick the nil bidder is
+        forced to take becomes a bag but does <em>not</em> help the partner's
         contract, so the partner's bid has to be made unaided. Whichever is set
         is stated in the system prompt, so no model has to guess.
       </p>
